@@ -37,7 +37,7 @@ jobs:
           disable-animations: true
           script: |
             ./gradlew :app:connectedDebugAndroidTest --no-daemon
-            adb pull /sdcard/Android/data/com.sabvisa.local/files/test-previews app/build/test-previews
+            adb pull /data/local/tmp/sab-visa-test-previews app/build/test-previews
       - uses: actions/upload-artifact@v4
         if: always()
         with:

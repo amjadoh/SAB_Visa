@@ -1,9 +1,11 @@
 package com.sabvisa.local
 
 import android.graphics.Bitmap
+import android.os.ParcelFileDescriptor
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.test.platform.app.InstrumentationRegistry
 import com.sabvisa.core.*
 import org.junit.After
 import org.junit.Before
@@ -32,6 +34,11 @@ class DashboardTest {
         File(folder,"dashboard-synthetic.png").outputStream().use {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)
         }
+        // AGP uninstalls the test app afterward, so move this synthetic preview out of app storage now.
+        val command="mkdir -p /data/local/tmp/sab-visa-test-previews && cp '${folder.absolutePath}/dashboard-synthetic.png' /data/local/tmp/sab-visa-test-previews/dashboard-synthetic.png && echo OK"
+        val descriptor=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        val copied=ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { String(it.readBytes(),Charsets.UTF_8).trim() }
+        check(copied=="OK") { "تعذر جمع صورة الاختبار الاصطناعية" }
         compose.onNodeWithText("الأقساط",useUnmergedTree=true).performClick()
         compose.onNodeWithText("خطة تجريبية").assertExists()
         compose.onNodeWithText("السجل",useUnmergedTree=true).performClick()
