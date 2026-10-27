@@ -75,7 +75,7 @@ object SmsParser {
         val value = amount(text.substringBefore("الرصيد:"))
         val merchant = Regex("لدى (.*?) بمبلغ").find(text)?.groupValues?.get(1)?.take(160)
         if (type == SmsType.REVIEW || value == null || value <= 0 || !Regex(currency, RegexOption.IGNORE_CASE).containsMatchIn(text) ||
-            Regex("USD|EUR|GBP|AED", RegexOption.IGNORE_CASE).containsMatchIn(text))
+            Regex("(?<![A-Z])(?:USD|EUR|GBP|AED)(?![A-Z])", RegexOption.IGNORE_CASE).containsMatchIn(text))
             return ParsedSms(SmsType.REVIEW, last4=card, at=at, reason="صيغة غير مدعومة أو عملة تحتاج مبلغ الترحيل بالريال")
         return ParsedSms(type, value, available, card, at, reason=if(card == null) "حدد البطاقة يدوياً قبل التسجيل" else "راجع التاريخ والمبلغ والبطاقة", merchant=merchant)
     }

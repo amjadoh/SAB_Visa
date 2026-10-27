@@ -45,6 +45,16 @@ class SmsParserTest {
         assertEquals(SmsType.REVIEW,parse("شراء بطاقة Visa مرفوض SAR 12.00").type)
         assertEquals(SmsType.REVIEW,parse("عملية بطاقة غير معروفة").type)
     }
+    @Test fun currencyCodesInsideMerchantWordsAreNotForeignTransactions() {
+        for(merchant in listOf("SYNTHETIC XAEDY","SYNTHETIC USDMART","SYNTHETIC EUROSTORE")) {
+            val p=parse(purchase().replace("TEST STORE",merchant))
+            assertEquals(SmsType.PURCHASE,p.type)
+            assertEquals(4275L,p.amount)
+        }
+        for(currency in listOf("USD7.00","AED 8.00","EUR2.00")) {
+            assertEquals(SmsType.REVIEW,parse(purchase()+" "+currency).type)
+        }
+    }
     @Test fun senderMatchingIsExact() {
         assertEquals(SmsType.IGNORE,parse(purchase(),"FAKE-SAB").type)
         assertEquals(SmsType.PURCHASE,parse(purchase(),"sab").type)
