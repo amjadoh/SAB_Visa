@@ -35,15 +35,11 @@ jobs:
           api-level: 35
           arch: x86_64
           disable-animations: true
-          script: |
-            ./gradlew :app:connectedDebugAndroidTest --no-daemon
-            adb pull /data/local/tmp/sab-visa-test-previews app/build/test-previews
+          script: ./gradlew :app:connectedDebugAndroidTest --no-daemon
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: emulator-reports
-          path: |
-            app/build/reports/androidTests/
-            app/build/test-previews/
+          path: app/build/reports/androidTests/
           if-no-files-found: ignore
           retention-days: 7
