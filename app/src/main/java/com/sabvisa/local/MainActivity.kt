@@ -27,14 +27,20 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
-    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    private lateinit var model: CardViewModel
+    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result -> if(result[Manifest.permission.READ_SMS]==true) model.importAll() }
+    override fun onResume() {
+        super.onResume()
+        if(::model.isInitialized) model.syncIfAllowed()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        model=androidx.lifecycle.ViewModelProvider(this)[CardViewModel::class.java]
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setContent {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                 MaterialTheme(colorScheme=lightColorScheme(primary=Color(0xFF176B60),secondary=Color(0xFF415D66),background=Color(0xFFF4F7F5),surface=Color.White)) {
-                    App(onPermissions={
+                    App(vm=model,onPermissions={
                         permissions.launch(buildList {
                             add(Manifest.permission.READ_SMS); add(Manifest.permission.RECEIVE_SMS)
                             if(Build.VERSION.SDK_INT>=33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -59,11 +65,13 @@ private data class Form(val title: String, val help: String, val fields: List<In
 @Composable private fun FormDialog(form: Form, busy: Boolean, onClose: () -> Unit) {
     val values = remember(form) { mutableStateMapOf<String,String>().apply { form.fields.forEach { put(it.key,it.initial) } } }
     var error by remember(form) { mutableStateOf("") }
+    var previous by remember(form) { mutableStateOf(false) }
     AlertDialog(onDismissRequest=onClose,title={ Text(form.title) },text={
         Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             Text(form.help,style=MaterialTheme.typography.bodySmall)
             form.fields.forEach { f ->
-                if(f.options.isEmpty()) OutlinedTextField(value=values[f.key].orEmpty(),onValueChange={ values[f.key]=it },label={Text(f.label)},modifier=Modifier.fillMaxWidth().testTag(f.key),singleLine=true)
+                if(f.key=="previous" && !previous) TextButton(onClick={previous=true}) { Text("الخطة بدأت سابقاً؟") }
+                else if(f.options.isEmpty()) OutlinedTextField(value=values[f.key].orEmpty(),onValueChange={ values[f.key]=it },label={Text(f.label)},modifier=Modifier.fillMaxWidth().testTag(f.key),singleLine=true)
                 else {
                     var open by remember { mutableStateOf(false) }
                     Box {
@@ -83,212 +91,155 @@ private data class Form(val title: String, val help: String, val fields: List<In
     val data by vm.data.collectAsState()
     val status by vm.status.collectAsState()
     val busy by vm.busy.collectAsState()
-    var tab by remember { mutableStateOf(0) }
-    var rowLimit by remember(tab) { mutableIntStateOf(100) }
+    var tab by remember { mutableIntStateOf(0) }
+    var rows by remember(tab) { mutableIntStateOf(100) }
     var form by remember { mutableStateOf<Form?>(null) }
-    var erase by remember { mutableStateOf(false) }
-    var voidEntry by remember { mutableStateOf<Entry?>(null) }
     var consent by remember { mutableStateOf(false) }
-    val b = data?.book
-    fun showEntry(item: Inbox? = null) {
-        if(b==null) return
-        val p=item?.parsed
-        val initialKind = when(p?.type) { SmsType.PURCHASE -> "PURCHASE"; SmsType.PAYMENT -> "PAYMENT"; SmsType.REFUND -> "REFUND"; else -> "PURCHASE" }
-        form=Form("تسجيل عملية", "البطاقة المحددة: •••• ${b.config.last4}. خصص أصل القسط فقط عند تأكيد تخصيص البنك. لا تضف قسطاً كمشتريات جديدة. التاريخ بتوقيت الرياض.",
-            listOf(Input("kind","النوع",initialKind,kinds),Input("amount","المبلغ بالريال",p?.amount?.let(::sar).orEmpty()),Input("at","التاريخ والوقت yyyy-MM-ddTHH:mm:ss",local(p?.at ?: Instant.now())),Input("note","الوصف / سبب التسوية",p?.merchant ?: "عملية يدوية"),
-                Input("plan","خطة تخصيص السداد","",listOf("" to "لا تخصيص")+b.plans.map { it.id to it.name }),Input("principal","أصل القسط ضمن السداد","0"),
-                Input("statement","يخص كشف","",listOf("" to "غير مخصص")+b.statements.map { it.id to "${it.issued} — ${sar(it.amount)}" }))) { v ->
-            val e=Entry(id(),Kind.valueOf(v.getValue("kind")),money(v.getValue("amount")),notFuture(instant(v.getValue("at"))),v.getValue("note"),item?.id,v["plan"]?.ifEmpty { null },money(v.getValue("principal")),v["statement"]?.ifEmpty { null })
-            b.copy(entries=b.entries+e).validate()
-            if(item==null) vm.updateBook { it.copy(entries=it.entries+e) } else vm.accept(item,entry=e)
-        }
-    }
-    fun showStatement(item: Inbox? = null) {
-        val p=item?.parsed
-        form=Form("تسجيل كشف البنك","أدخل المبلغ الذي ستتابع سداده كما هو في الكشف؛ تسمية «المبلغ المستحق» وحدها لا تثبت أنه كامل الرصيد. تاريخ الإصدار وتاريخ الاستحقاق مستقلان عن يوم التخطيط.",
-            listOf(Input("issued","تاريخ الإصدار yyyy-MM-dd",(p?.at ?: Instant.now()).atZone(RIYADH).toLocalDate().toString()),Input("due","تاريخ الاستحقاق yyyy-MM-dd",p?.due?.toString().orEmpty()),Input("amount","مبلغ الكشف بالريال",p?.amount?.let(::sar).orEmpty()))) { v ->
-            val s=Statement(id(),date(v.getValue("issued")),date(v.getValue("due")),money(v.getValue("amount")))
-            require(s.issued<=LocalDate.now(RIYADH)) { "تاريخ إصدار مستقبلي" }
-            require(b?.statements?.none { it.issued==s.issued } != false) { "يوجد كشف بهذا التاريخ؛ راجعه قبل الإضافة" }
-            if(item==null) vm.updateBook { it.copy(statements=it.statements+s) } else vm.accept(item,statement=s)
-        }
-    }
-    fun showCheckpoint(item: Inbox? = null) {
-        val p=item?.parsed
-        form=Form("مقارنة رصيد البنك","هذه المقارنة لا تغيّر الدين أو الحد. اختلاف التاريخ أو الحجز المؤقت أو الأقساط أو الرسوم قد يفسّر الفرق. الرصيد في إشعار الرصيد المتوفر قد يكون مقرباً.",
-            listOf(Input("available","المتاح لدى البنك بالريال",p?.available?.let(::sar).orEmpty()),Input("at","وقت الرصد yyyy-MM-ddTHH:mm:ss",local(p?.at ?: Instant.now())),Input("note","مصدر الرصد","رصد من البنك"))) { v ->
-            val c=Checkpoint(id(),notFuture(instant(v.getValue("at"))),money(v.getValue("available")),v.getValue("note"))
-            require(c.at >= (b?.config?.openingAt ?: Instant.EPOCH)) { "الرصد يسبق البداية" }
-            if(item==null) vm.updateBook { it.copy(checkpoints=it.checkpoints+c) } else vm.accept(item,checkpoint=c)
-        }
-    }
+    var erase by remember { mutableStateOf(false) }
+    val b=data?.book
+    val now=Instant.now()
     Scaffold(bottomBar={ if(b!=null) NavigationBar {
         listOf("الرئيسية","الرسائل","الأقساط","السجل","الإعدادات").forEachIndexed { index,label ->
-            NavigationBarItem(selected=tab==index,onClick={tab=index},icon={ Text(listOf("◉","✉","▦","≡","⚙")[index]) },label={Text(label,style=MaterialTheme.typography.labelSmall)})
+            NavigationBarItem(selected=tab==index,onClick={tab=index},icon={Text(listOf("◉","✉","▦","≡","⚙")[index])},label={Text(label,style=MaterialTheme.typography.labelSmall)})
         }
     } }) { padding ->
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding).verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             Text("SAB Visa",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
-            Text("متابعة البطاقة على جهازك",color=MaterialTheme.colorScheme.secondary)
+            Text("متابعة تلقائية من رسائل البطاقة",color=MaterialTheme.colorScheme.secondary)
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if(status.isNotEmpty()) Text(status,modifier=Modifier.testTag("status"),style=MaterialTheme.typography.bodySmall)
+            if(status.isNotBlank()) Text(status,style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("status"))
             if(data==null) {
-                Text("جارٍ فتح التخزين المشفر، أو تعذّر فتحه. لا تتم إعادة ضبط البيانات تلقائياً.")
+                Text("جارٍ فتح التخزين المشفر، أو تعذّر فتحه. بياناتك لا تُستبدل تلقائياً.")
                 OutlinedButton(onClick={vm.action { vm.vault.load(); Unit }}) { Text("إعادة المحاولة") }
             } else if(b==null) {
-                Panel("ابدأ من رصيد معروف") {
-                    Text("أدخل المديونية غير المقسطة عند نقطة البداية. أضف أصل الأقساط المتبقي بشكل مستقل. الرسائل الأقدم من البداية لا تدخل في الحسابات.")
-                    Text("لا يضمن التطبيق تجنّب الأرباح أو الرسوم. كشف البنك وشروط البطاقة هما المرجع.")
-                    Button(onClick={
-                        form=Form("إعداد البطاقة","لا تدخل رقم البطاقة الكامل. يوم 10 موعد تخطيط قابل للتعديل، وليس استنتاجاً لموعد إصدار البنك. ضع وقت البداية قبل الرسائل التي تريد استيرادها.",
-                            listOf(Input("limit","الحد الائتماني بالريال","10000"),Input("ordinary","مديونية غير مقسطة عند البداية","0"),Input("last4","آخر أربع خانات"),Input("opening","وقت البداية yyyy-MM-ddTHH:mm:ss",local(Instant.now())),Input("day","يوم التخطيط الشهري 1–28","10"),Input("budget","ميزانية الشهر بالريال؛ صفر لإيقافها","0"))) { v ->
-                            val c=Config(positive(v.getValue("limit")),money(v.getValue("ordinary")),notFuture(instant(v.getValue("opening"))),digits(v.getValue("last4")),digits(v.getValue("day")).toInt(),money(v.getValue("budget")))
-                            vm.action { vm.vault.change { check(it.book==null); it.copy(book=Book(c)) }; vm.status.value="تم إعداد البطاقة" }
+                Panel("إعداد مرة واحدة") {
+                    Text("حدد الحد الائتماني وآخر أربع خانات. يقرأ التطبيق الشراء والسداد والرصيد من رسائل SAB تلقائياً؛ وتنشأ خطط الأقساط من رسالة التأكيد دون إدخال المبلغ أو المدة.")
+                    Button(modifier=Modifier.testTag("setup"),onClick={
+                        form=Form("إعداد البطاقة","الحد المسجل قابل للتعديل لاحقاً من الإعدادات. لا تدخل رقم البطاقة الكامل.",listOf(Input("limit","الحد الائتماني بالريال","10000"),Input("last4","آخر أربع خانات"))) { values ->
+                            val config=Config(positive(values.getValue("limit")),0,Instant.EPOCH,digits(values.getValue("last4")))
+                            vm.action { vm.vault.change { check(it.book==null); it.copy(book=Book(config)) }; vm.status.value="تم الإعداد؛ فعّل قراءة رسائل SAB مرة واحدة" }
                         }
-                    },modifier=Modifier.testTag("setup")) { Text("إعداد البطاقة") }
+                    }) { Text("إعداد البطاقة") }
                 }
             } else when(tab) {
                 0 -> {
-                    val now=Instant.now()
-                    val balance=b.balances(now)
-                    val c=cycle(now,b.config.closeDay)
-                    Panel("المتاح التقديري",highlight=true) {
-                        Text("${sar(balance.available)} ر.س",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
-                        Text("حد البطاقة ${sar(b.config.limit)} • إجمالي الدين ${sar(balance.debt)}")
-                        Text("قيمة تقديرية؛ قد تختلف الحجوزات والرسوم وتوقيت الترحيل لدى البنك.")
+                    val live=b.liveBalance(now)
+                    val summary=b.repaymentSummary(now)
+                    Panel("مشتريات لتسديدها قبل يوم 10",true) {
+                        Text(summary?.let { "${sar(it.purchasesToClear)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
+                        summary?.let {
+                            Text("لتصفير المشتريات ${sar(it.purchasesToClear)} ر.س")
+                            Text("أصل قسط الشهر ضمن السداد ${sar(it.principalInNextPayment)} ر.س")
+                            if(it.principalInNextPayment>0) Text("إذا خُصص القسط من الدفعة، إجمالي تصفير المشتريات مع القسط ${sar(it.paymentToClearPurchases)} ر.س",style=MaterialTheme.typography.bodySmall)
+                        }
+                        live?.let { Text("استناداً إلى رصيد SMS بتاريخ ${local(it.anchor.at)}",style=MaterialTheme.typography.bodySmall) }
                     }
-                    Panel("هدف السداد قبل ${c.statementDate}") {
-                        Text("غير المقسط: ${sar(balance.ordinary.coerceAtLeast(0))} ر.س",style=MaterialTheme.typography.titleLarge)
-                        Text("أصل الأقساط المحجوز: ${sar(balance.principal)} ر.س")
-                        Text("أصل أقساط حل موعدها ولم يخصص لها سداد: ${sar(b.plans.sumOf { b.duePrincipal(it,LocalDate.now(RIYADH)) })} ر.س")
-                        Text("الهدف يشمل الرصيد غير المقسط المتراكم؛ لا يستبدل المبلغ المطلوب في كشف البنك ولا يشمل رسوم خطة غير مسجلة.")
-                        Button(onClick={showEntry()}) { Text("إضافة شراء أو سداد") }
+                    Panel(if(live?.estimated==true) "رصيد تقديري بعد آخر رسالة" else "رصيد البطاقة من SMS") {
+                        Text(live?.let { "${sar(it.available)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.titleLarge)
+                        Text("الحد الائتماني ${sar(b.limitAt(now))} ر.س")
+                        summary?.let { Text("سقف المشتريات بعد حجز الأقساط ${sar(it.purchaseCapacity)} ر.س") }
+                        live?.let {
+                            Text("المستخدم من الحد ${sar(it.used)} ر.س")
+                            Text("وقت آخر رصيد: ${local(it.anchor.at)}",style=MaterialTheme.typography.bodySmall)
+                        }
+                        Text("يتحدث الرصيد عند وصول SMS. رسائل الإيداع والحوالات لا تدخل في حساب البطاقة.",style=MaterialTheme.typography.bodySmall)
                     }
-                    b.statements.sortedByDescending { it.issued }.forEach { s -> Panel("كشف ${s.issued}") {
-                        Text("المسجل ${sar(s.amount)} • الباقي ${sar(b.statementRemaining(s,now))} ر.س")
-                        Text("الاستحقاق ${s.due} • تخصيص السداد يدوي ويحتاج مطابقة البنك")
-                    } }
-                    OutlinedButton(onClick={showStatement()}) { Text("إضافة كشف البنك") }
+                    val principal=b.plans.sumOf { b.remaining(it,now) }
+                    Panel("الأقساط وغير المقسط") {
+                        Text("أصل الأقساط المتبقي ${sar(principal)} ر.س")
+                        live?.let {
+                            Text("غير المقسط التقديري ${sar((it.used-principal).coerceAtLeast(0))} ر.س")
+                            if(principal>it.used.coerceAtLeast(0)) Text("راجع الخطة: أصل الأقساط المسجل أكبر من المستخدم حسب آخر رسالة.",color=MaterialTheme.colorScheme.error)
+                        }
+                        Text("يُخصص من السداد بعد يوم 10 أصل قسط واحد لكل خطة في الشهر، والباقي سداد إضافي. هذا تخصيص حسب قاعدتك، وليس بياناً من البنك.",style=MaterialTheme.typography.bodySmall)
+                    }
                     val month=LocalDate.now(RIYADH).withDayOfMonth(1)
                     val spending=b.spending(month.atStartOfDay(RIYADH).toInstant(),month.plusMonths(1).atStartOfDay(RIYADH).toInstant())
-                    Panel("موازنة الشهر") {
-                        Text("صافي المشتريات بعد الاسترجاع ${sar(spending)} ر.س")
-                        if(b.config.budget>0) {
-                            Text("الميزانية ${sar(b.config.budget)} • المتبقي ${sar(b.config.budget-spending)}")
-                            LinearProgressIndicator(progress={ (spending.toFloat()/b.config.budget).coerceIn(0f,1f) },modifier=Modifier.fillMaxWidth())
-                            if(spending>b.config.budget) Text("تجاوزت الميزانية",color=MaterialTheme.colorScheme.error)
-                        }
-                        Text("دورة التخطيط ${c.start.atZone(RIYADH).toLocalDate()} حتى ${c.statementDate} (النهاية غير مشمولة): ${sar(b.spending(c.start,c.endExclusive))} ر.س")
-                        Text("الموازنة تشمل العمليات المسجلة بعد نقطة البداية فقط.")
+                    Panel("مشتريات الشهر") {
+                        Text("${sar(spending)} ر.س",style=MaterialTheme.typography.titleLarge)
+                        if(b.config.budget>0) Text("من ميزانية ${sar(b.config.budget)} ر.س • المتبقي ${sar(b.config.budget-spending)}")
                     }
-                    b.checkpoints.maxByOrNull { it.at }?.let { p -> Panel("آخر مقارنة مع البنك") {
-                        Text("${local(p.at)} • لدى البنك ${sar(p.bankAvailable)}")
-                        Text("التقدير في الوقت نفسه ${sar(b.balances(p.at).available)} • الفرق ${sar(b.discrepancy(p))} ر.س")
+                    b.statements.sortedByDescending { it.issued }.take(3).forEach { s -> Panel("كشف ${s.issued}") {
+                        Text("المبلغ المذكور في رسالة الكشف ${sar(s.amount)} ر.س")
+                        Text("الاستحقاق ${s.due} • تحقق من كامل الكشف لدى البنك",style=MaterialTheme.typography.bodySmall)
                     } }
-                    OutlinedButton(onClick={showCheckpoint()}) { Text("مقارنة المتاح مع البنك") }
-                    Text("رسائل تنتظر المراجعة: ${data!!.inbox.count { it.status=="NEW" }}")
+                    val context=androidx.compose.ui.platform.LocalContext.current
+                    if(context.checkSelfPermission(Manifest.permission.READ_SMS)!=PackageManager.PERMISSION_GRANTED) Button(onClick={consent=true}) { Text("تفعيل قراءة رسائل SAB") }
                 }
                 1 -> {
-                    Text("مراجعة الرسائل",style=MaterialTheme.typography.titleLarge)
-                    Text("لا تدخل الرسالة في الأرصدة حتى تعتمدها. مطابقة المرسل لا تثبت أصالة الرسالة.")
-                    OutlinedButton(onClick={consent=true}) { Text("تفعيل قراءة رسائل SAB") }
-                    OutlinedButton(onClick={vm.importAll()},enabled=!busy) { Text("استيراد رسائل المرسلين المعتمدين") }
-                    OutlinedButton(onClick={
-                        form=Form("لصق رسالة يدوياً","يبقى النص في الذاكرة أثناء التحليل فقط. استخدم وقت الاستلام الأصلي لمنع التكرار.",listOf(Input("sender","معرف المرسل","SAB"),Input("received","وقت الاستلام yyyy-MM-ddTHH:mm:ss",local(Instant.now())),Input("body","نص الرسالة"))) { v ->
-                            val at=notFuture(instant(v.getValue("received"))); require(v.getValue("body").length<=10000); vm.paste(v.getValue("sender"),v.getValue("body"),at)
-                        }
-                    }) { Text("لصق رسالة دون صلاحيات") }
-                    data!!.inbox.filter { it.status=="NEW" }.sortedByDescending { it.received }.take(rowLimit).forEach { item ->
+                    Text("رسائل البطاقة",style=MaterialTheme.typography.titleLarge)
+                    Text("الرسائل الواضحة تُحتسب تلقائياً. غير المدعوم أو المختلف في البطاقة يُستبعد من الحسابات.")
+                    OutlinedButton(onClick={consent=true}) { Text("صلاحية قراءة الرسائل") }
+                    OutlinedButton(onClick={vm.importAll()},enabled=!busy) { Text("مزامنة الرسائل التاريخية") }
+                    data!!.inbox.sortedByDescending { it.parsed.at }.take(rows).forEach { item ->
                         val p=item.parsed
-                        Panel("${p.type} • ${p.last4 ?: "بطاقة غير محددة"}") {
-                            Text("${p.amount?.let(::sar) ?: "—"} ر.س • ${local(p.at)}")
-                            p.merchant?.let { Text(it) }; Text(p.reason)
-                            p.available?.let { Text("الرصيد المذكور ${sar(it)} (للمقارنة فقط)") }
-                            if(p.last4!=null && p.last4!=b.config.last4) Text("بطاقة مختلفة؛ لا يمكن اعتمادها",color=MaterialTheme.colorScheme.error)
-                            else Button(onClick={ when(p.type) { SmsType.STATEMENT -> showStatement(item); SmsType.BALANCE -> showCheckpoint(item); else -> showEntry(item) } }) { Text("مراجعة واعتماد") }
-                            TextButton(onClick={vm.dismiss(item)}) { Text("تجاهل") }
+                        val label=when(item.status) { "AUTO" -> "احتُسبت تلقائياً"; "DUPLICATE" -> "مكررة؛ لم تحتسب"; "OTHER_CARD" -> "بطاقة أخرى"; "LEGACY" -> "سجل سابق محفوظ"; "HISTORY" -> "ضمن بداية التتبع السابقة"; "FUTURE" -> "تاريخ مستقبلي؛ مستبعدة"; "IGNORED" -> "مستبعدة"; else -> "تحتاج تحققاً؛ لم تحتسب" }
+                        Panel(label) {
+                            Text("${p.last4 ?: "بطاقة غير محددة"} • ${local(p.at)}")
+                            p.amount?.let { Text("${sar(it)} ر.س") }
+                            p.available?.let { Text("الرصيد المذكور ${sar(it)} ر.س") }
+                            p.merchant?.let { Text(it) }
+                            if(item.status!="AUTO") Text(p.reason,style=MaterialTheme.typography.bodySmall)
+                            if(item.status=="AUTO" && p.type==SmsType.PAYMENT) {
+                                val allocated=b.entries.filter { it.sourceId?.startsWith("auto:${item.id}:")==true }.sumOf { it.principalPaid }
+                                Text("توزيع الدفعة: أصل قسط ${sar(allocated)} • مشتريات / سداد إضافي ${sar((p.amount ?: 0)-allocated)} ر.س")
+                            }
                         }
                     }
-                    if(data!!.inbox.none { it.status=="NEW" }) Text("لا رسائل معلقة")
-                    if(data!!.inbox.count { it.status=="NEW" }>rowLimit) TextButton(onClick={rowLimit+=100}) { Text("إظهار 100 رسالة إضافية") }
+                    if(data!!.inbox.size>rows) TextButton(onClick={rows+=100}) { Text("إظهار المزيد") }
                 }
                 2 -> {
                     Text("خطط الأقساط",style=MaterialTheme.typography.titleLarge)
-                    Text("مرور الشهر لا يحرر الحد تلقائياً. يحرر الأصل عند تسجيل سداد مؤكد وتخصيصه للخطة. القسط المعروض أصل فقط، والرسوم تُسجل منفصلة.")
-                    Button(onClick={
-                        form=Form("إضافة خطة","أدخل أصل المبلغ المتبقي وعدد الأشهر المتبقية. عند تحويل شراء مسجل، اختر التحويل حتى لا يتكرر الدين. لا تستخدم التحويل إذا لم تكن المديونية في رصيد غير المقسط.",
-                            listOf(Input("name","اسم الخطة"),Input("principal","أصل المبلغ المتبقي"),Input("months","الأشهر المتبقية"),Input("due","أول استحقاق yyyy-MM-dd"),Input("at","تاريخ بدء التتبع yyyy-MM-ddTHH:mm:ss",local(Instant.now())),
-                                Input("mode","مصدر الخطة","convert",listOf("convert" to "تحويل من دين غير مقسط مسجل", "opening" to "قسط قائم عند نقطة البداية", "new" to "شراء مقسط جديد غير مسجل")))) { v ->
-                            val mode=v.getValue("mode")
-                            val at=if(mode=="opening") b.config.openingAt else notFuture(instant(v.getValue("at")))
-                            val p=Plan(id(),v.getValue("name"),positive(v.getValue("principal")),digits(v.getValue("months")).toInt(),date(v.getValue("due")),at)
-                            require(at>=b.config.openingAt)
-                            val adjustment=if(mode=="convert") {
-                                require(at>b.config.openingAt && b.balances(at).ordinary>=p.principal) { "الرصيد غير المقسط لا يغطي التحويل" }
-                                listOf(Entry(id(),Kind.ADJUSTMENT,-p.principal,at,"تحويل أصل شراء إلى خطة ${p.name}"))
-                            } else if(mode=="new") listOf(
-                                Entry(id(),Kind.PURCHASE,p.principal,at,"شراء مقسط جديد: ${p.name}"),
-                                Entry(id(),Kind.ADJUSTMENT,-p.principal,at,"نقل أصل الشراء الجديد إلى خطة ${p.name}")
-                            ) else emptyList()
-                            vm.updateBook { it.copy(plans=it.plans+p,entries=it.entries+adjustment) }
-                        }
-                    }) { Text("إضافة خطة أقساط") }
+                    Text("تُنشأ الخطط تلقائياً من رسالة تأكيد التحويل إلى أقساط، وتُستبعد الرسائل الدعائية.")
                     b.plans.forEach { p -> Panel(p.name) {
-                        Text("المتبقي ${sar(b.remaining(p,Instant.now()))} من ${sar(p.principal)} ر.س")
-                        Text("${p.months} شهر • أول قسط أصل ${sar(p.installment(0))} ر.س")
-                        (0 until p.months).forEach { i -> Text("${i+1}. ${p.due(i)} — ${sar(p.installment(i))} ر.س") }
+                        val remaining=b.remaining(p,now)
+                        Text("المتبقي ${sar(remaining)} ر.س",style=MaterialTheme.typography.titleLarge)
+                        Text("المبلغ الأصلي ${sar(p.principal)} • المدة ${p.months} شهر")
+                        if(remaining>0) Text("أصل القسط الشهري ${sar(b.monthlyPrincipal(p,java.time.YearMonth.now(RIYADH)))} ر.س")
+                        Text("أصل سُدد منذ بدء التتبع هذا الشهر: ${sar(b.principalPaidIn(p,java.time.YearMonth.now(RIYADH)))} ر.س")
+                        if(p.paidBeforeTracking>0) Text("أقساط مسددة قبل بدء التتبع: ${p.paidBeforeTracking}")
+                        Text("الأقساط المسددة ${b.completedInstallments(p,now)} من ${p.months} • المتبقية ${p.months-b.completedInstallments(p,now)}")
                     } }
                 }
                 3 -> {
-                    Text("سجل العمليات",style=MaterialTheme.typography.titleLarge)
-                    Text("الإلغاء يحتفظ بالعملية في السجل ويعيد حساب الأرصدة. لتصحيح عملية ألغها ثم أدخل البديل.")
-                    Button(onClick={showEntry()}) { Text("إضافة عملية يدوية") }
-                    b.entries.sortedByDescending { it.at }.take(rowLimit).forEach { e -> Panel(kindName(e.kind)+(if(e.voided) " — ملغاة" else "")) {
+                    Text("السجل التلقائي",style=MaterialTheme.typography.titleLarge)
+                    Text("كل عملية مرتبطة برسالتها. تقسيم السداد إلى أصل قسط وسداد إضافي لا يكرر المبلغ.")
+                    b.entries.filterNot { it.voided }.sortedByDescending { it.at }.take(rows).forEach { e -> Panel(kindName(e.kind)) {
                         Text("${sar(e.amount)} ر.س • ${local(e.at)}"); Text(e.note)
-                        if(e.principalPaid>0) Text("منها أصل قسط ${sar(e.principalPaid)}")
-                        if(!e.voided) TextButton(onClick={voidEntry=e}) { Text("إلغاء العملية مع حفظ أثرها") }
                     } }
-                    if(b.entries.size>rowLimit) TextButton(onClick={rowLimit+=100}) { Text("إظهار 100 عملية إضافية") }
+                    if(b.entries.size>rows) TextButton(onClick={rows+=100}) { Text("إظهار المزيد") }
                 }
                 4 -> {
-                    Panel("الخصوصية") {
-                        Text("تخزين AES-GCM بمفتاح Android Keystore. لا إذن إنترنت، ولا تحليلات أو إعلانات أو نسخ سحابي. لا يُحفظ نص SMS الأصلي أو رموز التحقق. إزالة التطبيق تفقد بياناته ومفتاحه؛ لا يوجد تصدير في هذه النسخة.")
-                        Text("حماية الجهاز وقفل شاشته ضروريان؛ لا تتضمن هذه النسخة قفل تطبيق بيومترياً مستقلاً.")
+                    Panel("الحد الائتماني") {
+                        Text("${sar(b.limitAt(now))} ر.س",style=MaterialTheme.typography.titleLarge)
+                        OutlinedButton(onClick={
+                            form=Form("تعديل الحد الائتماني","حدّث الحد المسجل إلى الحد الذي أقره البنك. يُحفظ التغيير بتاريخه، ويظل الرصيد السابق من الرسالة كما ورد.",listOf(Input("limit","الحد الائتماني الجديد",sar(b.limitAt(now))))) { values -> vm.changeLimit(positive(values.getValue("limit"))) }
+                        },modifier=Modifier.testTag("change-limit")) { Text("تعديل الحد الائتماني") }
                     }
-                    Text("البطاقة •••• ${b.config.last4} • البداية ${local(b.config.openingAt)}")
-                    OutlinedButton(onClick={
-                        form=Form("إعدادات التخطيط","تغيير موعد التخطيط لا يعدّل الكشوف المسجلة أو تاريخ السداد. معرفات المرسلين مفصولة بفاصلة إنجليزية ويجب أن تطابق المرسل تماماً.",
-                            listOf(Input("day","يوم التخطيط",b.config.closeDay.toString()),Input("budget","ميزانية الشهر",sar(b.config.budget)),Input("senders","معرفات المرسلين",b.config.senders.joinToString(",")))) { v ->
-                            val updated=b.config.copy(closeDay=digits(v.getValue("day")).toInt(),budget=money(v.getValue("budget")),senders=v.getValue("senders").split(",").map { it.trim() }.toSet())
-                            vm.updateBook { it.copy(config=updated) }
-                        }
-                    }) { Text("تعديل التخطيط والميزانية والمرسلين") }
+                    OutlinedButton(onClick={form=Form("الميزانية والمرسلون","الإيداعات والحوالات مستبعدة دائماً. معرفات المرسلين مفصولة بفاصلة إنجليزية.",listOf(Input("budget","ميزانية الشهر؛ صفر لإيقافها",sar(b.config.budget)),Input("senders","المرسلون المعتمدون",b.config.senders.joinToString(",")))) { values ->
+                        val config=b.config.copy(budget=money(values.getValue("budget")),senders=values.getValue("senders").split(",").map { it.trim() }.toSet())
+                        vm.updateBook { it.copy(config=config) }
+                    }}) { Text("الميزانية والمرسلون") }
                     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
                         Text("تذكيرات محلية تقريبية")
-                        Switch(checked=b.config.reminders,onCheckedChange={ enabled ->
-                            if(enabled) onNotifications()
-                            vm.updateBook { scheduleReminders(vm.getApplication(),enabled); it.copy(config=it.config.copy(reminders=enabled)) }
-                        })
+                        Switch(checked=b.config.reminders,onCheckedChange={ enabled -> if(enabled) onNotifications(); vm.updateBook { scheduleReminders(vm.getApplication(),enabled); it.copy(config=it.config.copy(reminders=enabled)) } })
                     }
-                    Text("تُراجع المواعيد كل 12 ساعة تقريباً؛ قد يؤخرها النظام أو تعطيل الإشعارات. افحص موعد السداد بنفسك.")
-                    OutlinedButton(onClick={erase=true}) { Text("حذف جميع بيانات التطبيق") }
-                    Text("SAB Visa مشروع مستقل، غير تابع للبنك. الواجهة تعرض تقديرات ولا تنفذ مدفوعات.")
+                    Panel("الخصوصية") {
+                        Text("المعالجة والتخزين المشفر على جهازك. لا إذن إنترنت ولا إعلانات أو نسخ سحابي. لا نحفظ النص الأصلي أو رموز التحقق أو أرقام الحسابات الكاملة.")
+                        Text("لا يوجد قفل بيومتري مستقل أو تصدير في هذه النسخة. إزالة التطبيق تفقد بياناته. لا يضمن التطبيق تجنب الأرباح؛ كشف البنك وشروطه هما المرجع.",style=MaterialTheme.typography.bodySmall)
+                    }
+                    OutlinedButton(onClick={erase=true}) { Text("حذف بيانات التطبيق") }
                 }
             }
-            Spacer(Modifier.height(16.dp))
         }
     }
     form?.let { FormDialog(it,busy) { form=null } }
-    if(consent) AlertDialog(onDismissRequest={consent=false},title={Text("قراءة الرسائل محلياً")},text={Text("سيقرأ التطبيق رسائل معرفات المرسلين المعتمدين بعد وقت البداية فقط، ويحلل رسائل البطاقة على الجهاز. لا يرسلها إلى أي جهة. يمكنك الرفض واستخدام اللصق اليدوي، وسحب الصلاحية لاحقاً من إعدادات Android.")},confirmButton={TextButton(onClick={consent=false;onPermissions()}) { Text("متابعة إلى صلاحيات Android") }},dismissButton={TextButton(onClick={consent=false}) { Text("إلغاء") }})
-    if(erase) AlertDialog(onDismissRequest={erase=false},title={Text("حذف البيانات المحلية؟")},text={Text("سيُحذف سجل التطبيق والأقساط والكشوف والمفتاح. لا توجد نسخة احتياطية داخل التطبيق. رسائل هاتفك الأصلية لا تُحذف.")},confirmButton={TextButton(onClick={erase=false;vm.erase()}) { Text("حذف") }},dismissButton={TextButton(onClick={erase=false}) { Text("إلغاء") }})
-    voidEntry?.let { e -> AlertDialog(onDismissRequest={voidEntry=null},title={Text("إلغاء ${sar(e.amount)} ر.س؟")},text={Text("سيعاد احتساب الأرصدة مع الاحتفاظ بأثر العملية.")},confirmButton={TextButton(onClick={voidEntry=null;vm.updateBook { it.copy(entries=it.entries.map { item -> if(item.id==e.id) item.copy(voided=true) else item }) }}) { Text("إلغاء العملية") }},dismissButton={TextButton(onClick={voidEntry=null}) { Text("رجوع") }}) }
+    if(consent) AlertDialog(onDismissRequest={consent=false},title={Text("قراءة رسائل SAB محلياً")},text={Text("بعد منح الإذن تُستورد الرسائل التاريخية للمرسل المعتمد وتُسجّل عمليات البطاقة تلقائياً. رموز التحقق والإيداعات والحوالات ومكافآت المحفظة مستبعدة. يمكنك سحب الإذن من إعدادات Android.")},confirmButton={TextButton(onClick={consent=false;onPermissions()}) { Text("متابعة") }},dismissButton={TextButton(onClick={consent=false}) { Text("إلغاء") }})
+    if(erase) AlertDialog(onDismissRequest={erase=false},title={Text("حذف البيانات المحلية؟")},text={Text("يُحذف سجل التطبيق وخططه ومفتاحه دون نسخة احتياطية. رسائل الهاتف الأصلية لا تُحذف.")},confirmButton={TextButton(onClick={erase=false;vm.erase()}) { Text("حذف") }},dismissButton={TextButton(onClick={erase=false}) { Text("إلغاء") }})
 }
 
 @Composable private fun Panel(title: String, highlight: Boolean=false, content: @Composable ColumnScope.() -> Unit) {
     Card(modifier=Modifier.fillMaxWidth(),colors=CardDefaults.cardColors(containerColor=if(highlight) Color(0xFFD9F2E8) else MaterialTheme.colorScheme.surface)) {
-        Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(9.dp)) {
-            Text(title,style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold)
-            content()
-        }
+        Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(9.dp)) { Text(title,style=MaterialTheme.typography.titleMedium,fontWeight=FontWeight.Bold); content() }
     }
 }

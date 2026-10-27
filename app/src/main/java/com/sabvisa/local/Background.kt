@@ -26,7 +26,7 @@ class SmsReceiver : BroadcastReceiver() {
                 val sender = messages.first().originatingAddress ?: return@execute
                 val body = messages.joinToString("") { it.messageBody.orEmpty() }
                 val added = Vault.get(context).ingest(sender, body, Instant.ofEpochMilli(messages.first().timestampMillis))
-                if (added) notifyLocal(context, 2, "رسالة بطاقة للمراجعة", "افتح SAB Visa لمراجعة عملية جديدة. لم تُضف إلى الحسابات بعد.")
+                if (added) notifyLocal(context, 2, "تحديث البطاقة", "عولجت رسالة بطاقة جديدة محلياً؛ افتح التطبيق للاطلاع على التحديث.")
             } catch (_: Exception) {
                 // Never log SMS or reset the encrypted ledger on failure.
                 notifyLocal(context, 3, "تعذّر حفظ الرسالة", "افتح التطبيق ثم أعد الاستيراد عند توفر التخزين.")

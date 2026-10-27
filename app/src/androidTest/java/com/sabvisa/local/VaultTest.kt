@@ -27,6 +27,9 @@ class VaultTest {
         assertTrue(vault.ingest("SAB",body,at)); assertFalse(vault.ingest("SAB",body,at))
         assertFalse(vault.ingest("SAB","رمز التحقق: 1234",at))
         assertEquals(1,vault.load().inbox.size)
+        assertEquals("AUTO",vault.load().inbox.single().status)
+        assertEquals(1,vault.load().book!!.entries.size)
+        assertEquals(654321L,vault.load().book!!.liveBalance(Instant.now())!!.available)
         val file=File(context.noBackupFilesDir,"ledger.v1.enc")
         assertFalse(String(file.readBytes(),Charsets.ISO_8859_1).contains("SYNTHETIC"))
         val original=file.readBytes(); val tampered=original.clone(); tampered[tampered.lastIndex]=(tampered.last().toInt() xor 1).toByte(); file.writeBytes(tampered)
@@ -39,5 +42,23 @@ class VaultTest {
         vault.change { VaultData(Book(Config(1000000,0,start,"9876"))) }
         try { vault.change { it.copy(book=it.book!!.copy(entries=listOf(Entry(id(),Kind.PURCHASE,100,start,"invalid")))) }; fail("expected") } catch(_: IllegalArgumentException) { }
         assertTrue(vault.load().book!!.entries.isEmpty())
+    }
+    @Test fun installmentMessagePaymentAndLimitChangeSurviveReloadWithoutDuplicates() {
+        val start=Instant.parse("2026-01-01T00:00:00Z")
+        vault.change { VaultData(Book(Config(1000000,0,start,"9876"))) }
+        val at=start.plusSeconds(20*86400)
+        val plan="تم تحويل العملية الشرائية بمبلغ س.ر 2,400.00 على البطاقة الائتمانية9876 الى12 قسط شهرى, مبلغ القسط س.ر 200.00, الربح الشهرى .00%و0 رسوم ادارية."
+        assertTrue(vault.ingest("SAB",plan,at))
+        assertFalse(vault.ingest("SAB",plan,at.plusSeconds(60)))
+        val payment="بطاقة ائتمانية: تأكيد السداد تم سداد بطاقتك Visa (***9876) بمبلغ SAR 500.00 في: 2026-01-22 12:00:00 الرصيد: SAR 7500.00"
+        assertTrue(vault.ingest("SAB",payment,at.plusSeconds(86400)))
+        val loaded=vault.load()
+        assertEquals(1,loaded.book!!.plans.size)
+        assertEquals(220000L,loaded.book.remaining(loaded.book.plans.single(),Instant.now()))
+        assertEquals(50000L,loaded.book.entries.sumOf { it.amount })
+        assertEquals(750000L,loaded.book.liveBalance(Instant.now())!!.available)
+        vault.change { d -> d.copy(book=d.book!!.copy(limitChanges=listOf(LimitChange("raise",Instant.now(),1200000)))) }
+        assertEquals(1200000L,vault.load().book!!.limitAt(Instant.now()))
+        assertEquals(950000L,vault.load().book!!.liveBalance(Instant.now())!!.available)
     }
 }
