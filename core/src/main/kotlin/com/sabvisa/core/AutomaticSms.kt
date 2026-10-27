@@ -10,19 +10,21 @@ data class AutomaticResult(val book: Book, val records: List<SmsRecord>)
 data class LiveBalance(val available: Long, val limit: Long, val anchor: Checkpoint, val estimated: Boolean) {
     val used: Long get() = limit - available
 }
-data class RepaymentSummary(val purchaseCapacity: Long, val purchasesToClear: Long, val principalInNextPayment: Long) {
+data class RepaymentSummary(val purchaseCapacity: Long, val purchasesToClear: Long, val principalInNextPayment: Long,
+                            val cyclePrincipal: Long = principalInNextPayment) {
     val paymentToClearPurchases: Long get() = purchasesToClear + principalInNextPayment
+    val targetBeforeClose: Long get() = purchasesToClear + cyclePrincipal
 }
 fun Book.repaymentSummary(at: Instant): RepaymentSummary? {
     val live=liveBalance(at) ?: return null
-    val date=at.atZone(RIYADH).toLocalDate()
-    val month=YearMonth.from(date)
+    val month=billingMonth(at)
     val reserved=plans.filter { it.createdAt<=at }.sumOf { remaining(it,at) }
-    val monthly=if(date.dayOfMonth<=10) 0 else plans.filter { it.createdAt<=at }.sumOf { p ->
-        minOf(remaining(p,at),(monthlyPrincipal(p,month)-principalPaidIn(p,month)).coerceAtLeast(0))
+    val monthly=plans.filter { it.createdAt<=at }.sumOf { p ->
+        minOf(remaining(p,at),(monthlyPrincipal(p,month)-principalPaidIn(p,month,at)).coerceAtLeast(0))
     }
     val capacity=live.limit-reserved
-    return RepaymentSummary(capacity,(capacity-live.available).coerceAtLeast(0),monthly)
+    val nextPayment=if(at.atZone(RIYADH).toLocalDate()<installmentDate(at)) 0 else monthly
+    return RepaymentSummary(capacity,(capacity-live.available).coerceAtLeast(0),nextPayment,monthly)
 }
 fun Book.completedInstallments(plan: Plan, at: Instant): Int {
     val paid=plan.principal-remaining(plan,at)
@@ -45,10 +47,21 @@ fun Book.liveBalance(at: Instant): LiveBalance? {
 
 fun Book.monthlyPrincipal(plan: Plan, month: YearMonth): Long {
     val offset = ChronoUnit.MONTHS.between(YearMonth.from(plan.firstDue), month)
-    return if(offset < 0 || plan.paidBeforeTracking==plan.months) 0 else plan.installment((offset+plan.paidBeforeTracking).coerceAtMost((plan.months-1).toLong()).toInt())
+    val prior=priorAllocations.count { it.planId==plan.id }
+    return if(offset < 0 || plan.paidBeforeTracking==plan.months) 0 else plan.installment((offset+plan.paidBeforeTracking+prior).coerceAtMost((plan.months-1).toLong()).toInt())
 }
-fun Book.principalPaidIn(plan: Plan, month: YearMonth): Long = entries.filter {
-    !it.voided && it.planId == plan.id && YearMonth.from(it.at.atZone(RIYADH)) == month
+/** The statement month just closed, regardless of when its SMS notification arrives. */
+fun Book.billingMonth(at: Instant): YearMonth = YearMonth.from(
+    cycle(at,config.closeDay).start.atZone(RIYADH).toLocalDate().minusDays(1))
+/** First configured payment day after the last close, not the bank's due date. */
+fun Book.installmentDate(at: Instant): LocalDate {
+    val start=cycle(at,config.closeDay).start.atZone(RIYADH).toLocalDate()
+    fun target(month: YearMonth)=month.atDay(minOf(config.installmentDay,month.lengthOfMonth()))
+    val month=YearMonth.from(start)
+    return target(month).takeIf { it>=start } ?: target(month.plusMonths(1))
+}
+fun Book.principalPaidIn(plan: Plan, month: YearMonth, at: Instant = Instant.MAX): Long = entries.filter {
+    !it.voided && it.planId == plan.id && it.at <= at && billingMonth(it.at) == month && it.sourceId?.contains(":prior:")!=true
 }.sumOf { it.principalPaid }
 
 /** Replay permits old/out-of-order SMS and late plan setup without losing historical records. */
@@ -77,25 +90,34 @@ fun applyAutomaticSms(original: Book, records: List<SmsRecord>, now: Instant): A
                 val principal=p.amount
                 val months=p.months
                 if(principal==null || months==null || p.monthly==null) { finish("REVIEW"); return@forEach }
-                val plan=Plan("auto-plan:${record.id}","خطة من SAB ${book.plans.size+1}",principal,months,p.at.atZone(RIYADH).toLocalDate().withDayOfMonth(11),p.at)
+                val plan=Plan("auto-plan:${record.id}","خطة من SAB ${book.plans.size+1}",principal,months,cycle(p.at,book.config.closeDay).statementDate,p.at)
                 book=book.copy(plans=book.plans+plan)
             }
-            SmsType.PURCHASE, SmsType.REFUND -> {
+            SmsType.PURCHASE, SmsType.REFUND, SmsType.FEE -> {
                 val amount=p.amount
                 if(amount==null || amount<=0) { finish("REVIEW"); return@forEach }
-                val kind=if(p.type==SmsType.PURCHASE) Kind.PURCHASE else Kind.REFUND
-                book=book.copy(entries=book.entries+Entry(prefix,kind,amount,p.at,p.merchant?.takeIf { it.isNotBlank() } ?: if(kind==Kind.PURCHASE) "شراء من SMS" else "استرجاع من SMS",sourceId=prefix))
+                val kind=when(p.type) { SmsType.PURCHASE -> Kind.PURCHASE; SmsType.FEE -> Kind.FEE; else -> Kind.REFUND }
+                book=book.copy(entries=book.entries+Entry(prefix,kind,amount,p.at,p.merchant?.takeIf { it.isNotBlank() } ?: when(kind) { Kind.PURCHASE -> "شراء من SMS"; Kind.FEE -> "رسوم من SMS"; else -> "استرجاع من SMS" },sourceId=prefix))
             }
             SmsType.PAYMENT -> {
                 var left=p.amount ?: 0
                 if(left<=0) { finish("REVIEW"); return@forEach }
                 val date=p.at.atZone(RIYADH).toLocalDate()
-                val month=YearMonth.from(date)
+                val month=book.billingMonth(p.at)
                 val statement=book.statements.filter { it.issued<=date && book.statementRemaining(it,p.at)>0 }.maxByOrNull { it.issued }
-                // User rule: only days 11..end, capped at one installment per plan per calendar month.
-                if(date.dayOfMonth>10) book.plans.sortedWith(compareBy<Plan> { it.createdAt }.thenBy { it.id }).forEach { plan ->
+                val prior=book.priorAllocations.filter { it.paymentId==record.id }
+                prior.forEach { approval ->
+                    val plan=book.plans.singleOrNull { it.id==approval.planId } ?: error("خطة الاعتماد السابق غير موجودة عند السداد")
+                    val amount=plan.installment(0)
+                    require(approval.approvedAt<=now && plan.paidBeforeTracking==0 && left>=amount && book.remaining(plan,p.at)>=amount) { "دفعة الاعتماد السابق لا تكفي أو تتعارض مع سجل الخطة" }
+                    val source="$prefix:prior:${plan.id}"
+                    book=book.copy(entries=book.entries+Entry(source,Kind.PAYMENT,amount,p.at,"قسط سابق باعتماد المستخدم؛ بانتظار مطابقة الكشف",sourceId=source,planId=plan.id,principalPaid=amount))
+                    left-=amount
+                }
+                // User tracking rule: wait for the configured payment date; cap per closed cycle.
+                if(prior.isEmpty() && date>=book.installmentDate(p.at)) book.plans.sortedWith(compareBy<Plan> { it.createdAt }.thenBy { it.id }).forEach { plan ->
                     if(plan.createdAt<=p.at && left>0) {
-                        val cap=(book.monthlyPrincipal(plan,month)-book.principalPaidIn(plan,month)).coerceAtLeast(0)
+                        val cap=(book.monthlyPrincipal(plan,month)-book.principalPaidIn(plan,month,p.at)).coerceAtLeast(0)
                         val paid=minOf(left,cap,book.remaining(plan,p.at))
                         if(paid>0) {
                             val source="$prefix:plan:${plan.id}"
@@ -121,7 +143,3 @@ fun applyAutomaticSms(original: Book, records: List<SmsRecord>, now: Instant): A
     book.validate()
     return AutomaticResult(book,records.map { it.copy(status=statuses[it.id] ?: it.status) })
 }
-
-/** Amount and term only: first tracked month is the current month; this is not a bank billing date. */
-fun trackedPlan(principal: Long, months: Int, at: Instant, number: Int): Plan = Plan(
-    id(),"خطة $number",principal,months,at.atZone(RIYADH).toLocalDate().withDayOfMonth(11),at)

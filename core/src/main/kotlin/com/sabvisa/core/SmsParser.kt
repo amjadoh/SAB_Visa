@@ -5,7 +5,7 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.format.ResolverStyle
 
-enum class SmsType { PURCHASE, PAYMENT, REFUND, STATEMENT, BALANCE, PLAN, REVIEW, IGNORE }
+enum class SmsType { PURCHASE, PAYMENT, REFUND, FEE, STATEMENT, BALANCE, PLAN, REVIEW, IGNORE }
 data class ParsedSms(val type: SmsType, val amount: Long? = null, val available: Long? = null,
                      val last4: String? = null, val at: Instant, val due: LocalDate? = null,
                      val reason: String, val merchant: String? = null, val months: Int? = null, val monthly: Long? = null)
@@ -67,6 +67,7 @@ object SmsParser {
             return ParsedSms(SmsType.IGNORE, at=received, reason="إشعار طلب سداد؛ ننتظر تأكيد السداد لمنع التكرار")
         val type = when {
             text.contains("تأكيد السداد") || text.contains("تم سداد") -> SmsType.PAYMENT
+            text.contains("تم خصم مبلغ") && Regex("Annual Fee|رسوم",RegexOption.IGNORE_CASE).containsMatchIn(text) -> SmsType.FEE
             Regex("استرجاع|عكس عملية|refund|reversal", RegexOption.IGNORE_CASE).containsMatchIn(text) -> SmsType.REFUND
             Regex("^(?:شراء|عملية شراء|purchase)", RegexOption.IGNORE_CASE).containsMatchIn(text) -> SmsType.PURCHASE
             else -> SmsType.REVIEW

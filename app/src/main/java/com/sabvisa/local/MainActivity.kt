@@ -28,6 +28,7 @@ import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
     private lateinit var model: CardViewModel
+    private val trackingProfile=registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if(uri!=null) model.importTracking(uri) }
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result -> if(result[Manifest.permission.READ_SMS]==true) model.importAll() }
     override fun onResume() {
         super.onResume()
@@ -45,7 +46,7 @@ class MainActivity : ComponentActivity() {
                             add(Manifest.permission.READ_SMS); add(Manifest.permission.RECEIVE_SMS)
                             if(Build.VERSION.SDK_INT>=33) add(Manifest.permission.POST_NOTIFICATIONS)
                         }.toTypedArray())
-                    }, onNotifications={ if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) permissions.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) })
+                    }, onNotifications={ if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED) permissions.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) },onImportTracking={trackingProfile.launch(arrayOf("application/json","text/plain"))})
                 }
             }
         }
@@ -87,7 +88,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
     },confirmButton={ Button(enabled=!busy,onClick={ try { form.save(values.toMap()); onClose() } catch(e: Exception) { error=e.message ?: "تحقق من الحقول" } }) { Text("حفظ") } },dismissButton={ TextButton(onClick=onClose) { Text("إلغاء") } })
 }
 
-@Composable fun App(onPermissions: () -> Unit = {}, onNotifications: () -> Unit = {}, vm: CardViewModel = viewModel()) {
+@Composable fun App(onPermissions: () -> Unit = {}, onNotifications: () -> Unit = {}, onImportTracking: () -> Unit = {}, vm: CardViewModel = viewModel()) {
     val data by vm.data.collectAsState()
     val status by vm.status.collectAsState()
     val busy by vm.busy.collectAsState()
@@ -125,14 +126,17 @@ private data class Form(val title: String, val help: String, val fields: List<In
                 0 -> {
                     val live=b.liveBalance(now)
                     val summary=b.repaymentSummary(now)
-                    Panel("مشتريات لتسديدها قبل يوم 10",true) {
-                        Text(summary?.let { "${sar(it.purchasesToClear)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
+                    Panel("المطلوب قبل يوم ${b.config.closeDay}",true) {
+                        Text(summary?.let { "${sar(it.targetBeforeClose)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
                         summary?.let {
-                            Text("لتصفير المشتريات ${sar(it.purchasesToClear)} ر.س")
-                            Text("أصل قسط الشهر ضمن السداد ${sar(it.principalInNextPayment)} ر.س")
-                            if(it.principalInNextPayment>0) Text("إذا خُصص القسط من الدفعة، إجمالي تصفير المشتريات مع القسط ${sar(it.paymentToClearPurchases)} ر.س",style=MaterialTheme.typography.bodySmall)
+                            Text("المشتريات والرسوم ${sar(it.purchasesToClear)} ر.س")
+                            Text("قسط الدورة غير المسدد حسب التوزيع ${sar(it.cyclePrincipal)} ر.س")
+                            if(it.cyclePrincipal>0 && it.principalInNextPayment==0L) Text("تخصيص القسط يبدأ ${b.installmentDate(now)}؛ السداد قبله إضافي ولا ينقص أصل الخطة.",style=MaterialTheme.typography.bodySmall)
                         }
                         live?.let { Text("استناداً إلى رصيد SMS بتاريخ ${local(it.anchor.at)}",style=MaterialTheme.typography.bodySmall) }
+                        if(b.priorAllocations.isNotEmpty()) Text("قسط سابق باعتمادك؛ بانتظار مطابقة الكشف القادم",style=MaterialTheme.typography.bodySmall)
+                        Text("المجموع يشمل القسط مرة واحدة. المشتريات أو الرسوم اللاحقة تغير الهدف، والمستحق البنكي قد يختلف.",style=MaterialTheme.typography.bodySmall)
+                        Text("هدف يوم ${b.config.closeDay} لا يؤخر استحقاق البنك؛ سدد المستحق بحلول التاريخ المذكور في الكشف.",style=MaterialTheme.typography.bodySmall)
                     }
                     Panel(if(live?.estimated==true) "رصيد تقديري بعد آخر رسالة" else "رصيد البطاقة من SMS") {
                         Text(live?.let { "${sar(it.available)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.titleLarge)
@@ -146,12 +150,13 @@ private data class Form(val title: String, val help: String, val fields: List<In
                     }
                     val principal=b.plans.sumOf { b.remaining(it,now) }
                     Panel("الأقساط وغير المقسط") {
+                        Text("موعد سداد القسط المخطط: يوم ${b.config.installmentDay} من الشهر")
                         Text("أصل الأقساط المتبقي ${sar(principal)} ر.س")
                         live?.let {
                             Text("غير المقسط التقديري ${sar((it.used-principal).coerceAtLeast(0))} ر.س")
                             if(principal>it.used.coerceAtLeast(0)) Text("راجع الخطة: أصل الأقساط المسجل أكبر من المستخدم حسب آخر رسالة.",color=MaterialTheme.colorScheme.error)
                         }
-                        Text("يُخصص من السداد بعد يوم 10 أصل قسط واحد لكل خطة في الشهر، والباقي سداد إضافي. هذا تخصيص حسب قاعدتك، وليس بياناً من البنك.",style=MaterialTheme.typography.bodySmall)
+                        Text("بعد إقفال الدورة يوم ${b.config.closeDay}، يبدأ تخصيص أصل قسط واحد لكل خطة من موعد السداد المخطط يوم ${b.config.installmentDay}؛ ما قبله وما يزيد على القسط سداد إضافي. هذا تقدير متابعة وليس بياناً من البنك.",style=MaterialTheme.typography.bodySmall)
                     }
                     val month=LocalDate.now(RIYADH).withDayOfMonth(1)
                     val spending=b.spending(month.atStartOfDay(RIYADH).toInstant(),month.plusMonths(1).atStartOfDay(RIYADH).toInstant())
@@ -159,7 +164,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         Text("${sar(spending)} ر.س",style=MaterialTheme.typography.titleLarge)
                         if(b.config.budget>0) Text("من ميزانية ${sar(b.config.budget)} ر.س • المتبقي ${sar(b.config.budget-spending)}")
                     }
-                    b.statements.sortedByDescending { it.issued }.take(3).forEach { s -> Panel("كشف ${s.issued}") {
+                    b.statements.sortedByDescending { it.issued }.take(3).forEach { s -> Panel("إشعار كشف رُصد ${s.issued}") {
                         Text("المبلغ المذكور في رسالة الكشف ${sar(s.amount)} ر.س")
                         Text("الاستحقاق ${s.due} • تحقق من كامل الكشف لدى البنك",style=MaterialTheme.typography.bodySmall)
                     } }
@@ -195,10 +200,20 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         val remaining=b.remaining(p,now)
                         Text("المتبقي ${sar(remaining)} ر.س",style=MaterialTheme.typography.titleLarge)
                         Text("المبلغ الأصلي ${sar(p.principal)} • المدة ${p.months} شهر")
-                        if(remaining>0) Text("أصل القسط الشهري ${sar(b.monthlyPrincipal(p,java.time.YearMonth.now(RIYADH)))} ر.س")
-                        Text("أصل سُدد منذ بدء التتبع هذا الشهر: ${sar(b.principalPaidIn(p,java.time.YearMonth.now(RIYADH)))} ر.س")
+                        if(remaining>0) Text("أصل القسط لدورة الكشف ${sar(b.monthlyPrincipal(p,b.billingMonth(now)))} ر.س")
+                        Text("أصل خُصص من دفعات هذه الدورة: ${sar(b.principalPaidIn(p,b.billingMonth(now),now))} ر.س")
                         if(p.paidBeforeTracking>0) Text("أقساط مسددة قبل بدء التتبع: ${p.paidBeforeTracking}")
-                        Text("الأقساط المسددة ${b.completedInstallments(p,now)} من ${p.months} • المتبقية ${p.months-b.completedInstallments(p,now)}")
+                        Text("الأقساط المسددة حسب توزيع التطبيق ${b.completedInstallments(p,now)} من ${p.months} • المتبقية ${p.months-b.completedInstallments(p,now)}")
+                        val prior=b.priorAllocations.singleOrNull { it.planId==p.id }
+                        if(prior!=null) {
+                            Text("يشمل قسطاً سابقاً باعتمادك بتاريخ ${local(prior.approvedAt)}؛ لم يُطابق مع الكشف بعد.",style=MaterialTheme.typography.bodySmall)
+                            TextButton(onClick={vm.removePrior(p.id)}) { Text("إلغاء اعتماد القسط السابق") }
+                        } else if(p.paidBeforeTracking==0) {
+                            val candidates=data!!.inbox.filter { it.status=="AUTO" && it.parsed.type==SmsType.PAYMENT && it.parsed.at>=p.createdAt && (it.parsed.amount ?: 0)>=p.installment(0) }.sortedByDescending { it.parsed.at }
+                            if(candidates.isNotEmpty()) OutlinedButton(onClick={
+                                form=Form("اعتماد قسط سابق واحد","يعاد تخصيص أصل قسط واحد من دفعة موجودة، دون إضافة سداد جديد. لا يغطي هذا الاعتماد قسط الدورة الحالية، ويظل بانتظار مطابقة كشف البنك.",listOf(Input("payment","دفعة السداد",candidates.first().id,candidates.map { it.id to "${local(it.parsed.at)} • ${sar(it.parsed.amount!!)} ر.س" }))) { values -> vm.approvePrior(p.id,values.getValue("payment")) }
+                            },modifier=Modifier.testTag("approve-prior")) { Text("اعتماد قسط سابق من سداد موجود") }
+                        }
                     } }
                 }
                 3 -> {
@@ -216,6 +231,20 @@ private data class Form(val title: String, val help: String, val fields: List<In
                             form=Form("تعديل الحد الائتماني","حدّث الحد المسجل إلى الحد الذي أقره البنك. يُحفظ التغيير بتاريخه، ويظل الرصيد السابق من الرسالة كما ورد.",listOf(Input("limit","الحد الائتماني الجديد",sar(b.limitAt(now))))) { values -> vm.changeLimit(positive(values.getValue("limit"))) }
                         },modifier=Modifier.testTag("change-limit")) { Text("تعديل الحد الائتماني") }
                     }
+                    Panel("دورة الكشف") {
+                        Text("يوم الإقفال المسجل: ${b.config.closeDay}")
+                        Text("موعد سداد القسط المخطط: يوم ${b.config.installmentDay}")
+                        Text("إذا لم يوجد هذا اليوم في الشهر، يُستخدم آخر يوم فيه. موعد الاستحقاق يُقرأ من رسالة البنك بصورة مستقلة.",style=MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick={form=Form("تعديل يوم إقفال الكشف","طابق اليوم مع تاريخ الكشف نفسه؛ قد تصل رسالة الإشعار بعده. تغيير اليوم يعيد حساب توزيع الرسائل تلقائياً.",listOf(Input("day","يوم الإقفال من 1 إلى 31",b.config.closeDay.toString()))) { values ->
+                            val day=digits(values.getValue("day")).toIntOrNull() ?: error("أدخل يوماً صحيحاً")
+                            vm.updateBook { it.copy(config=it.config.copy(closeDay=day)) }
+                        }},modifier=Modifier.testTag("change-cycle")) { Text("تعديل يوم الإقفال") }
+                        OutlinedButton(onClick={form=Form("موعد سداد القسط","قبل هذا الموعد لا يخصص السداد للقسط؛ بعده يخصص قسط واحد للدورة. لا يغيّر ذلك تاريخ استحقاق البنك ولا ينفذ دفعاً.",listOf(Input("installmentDay","يوم السداد المخطط من 1 إلى 31",b.config.installmentDay.toString()))) { values ->
+                            val day=digits(values.getValue("installmentDay")).toIntOrNull() ?: error("أدخل يوماً صحيحاً")
+                            vm.updateBook { it.copy(config=it.config.copy(installmentDay=day)) }
+                        }}) { Text("تعديل موعد القسط") }
+                    }
+                    OutlinedButton(onClick=onImportTracking) { Text("استيراد اعتماد التتبع") }
                     OutlinedButton(onClick={form=Form("الميزانية والمرسلون","الإيداعات والحوالات مستبعدة دائماً. معرفات المرسلين مفصولة بفاصلة إنجليزية.",listOf(Input("budget","ميزانية الشهر؛ صفر لإيقافها",sar(b.config.budget)),Input("senders","المرسلون المعتمدون",b.config.senders.joinToString(",")))) { values ->
                         val config=b.config.copy(budget=money(values.getValue("budget")),senders=values.getValue("senders").split(",").map { it.trim() }.toSet())
                         vm.updateBook { it.copy(config=config) }

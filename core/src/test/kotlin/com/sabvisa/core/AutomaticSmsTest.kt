@@ -8,7 +8,7 @@ class AutomaticSmsTest {
     private val start=Instant.parse("2026-01-01T00:00:00Z")
     private val now=Instant.parse("2026-05-30T20:00:00Z")
     private fun at(date: String)=LocalDate.parse(date).atTime(12,0).atZone(RIYADH).toInstant()
-    private fun book()=Book(Config(1_200_000,0,start,"9876"))
+    private fun book()=Book(Config(1_200_000,0,start,"9876",closeDay=10,installmentDay=11))
     private fun plan(id: String="p",principal: Long=900_000,months: Int=12)=Plan(id,"Synthetic",principal,months,LocalDate.of(2026,1,11),start)
     private fun sms(id: String,type: SmsType,amount: Long?,date: String,balance: Long?=null)=SmsRecord(id,ParsedSms(type,amount,balance,"9876",at(date),reason="synthetic"),at(date).plusSeconds(3))
     @Test fun postsAndUsesAbsoluteBankBalanceWithoutDoubleAddingPayment() {
@@ -18,13 +18,13 @@ class AutomaticSmsTest {
         assertEquals(75_000,b.entries.filter { it.kind==Kind.PAYMENT }.sumOf { it.amount })
         assertFalse(b.liveBalance(now)!!.estimated)
     }
-    @Test fun afterTenCappedOncePerMonthAndRemainingIsExtra() {
+    @Test fun afterConfiguredCloseCappedOncePerCycleAndRemainingIsExtra() {
         val records=listOf(sms("a",SmsType.PAYMENT,30_000,"2026-01-11"),sms("b",SmsType.PAYMENT,100_000,"2026-01-20"),sms("c",SmsType.PAYMENT,5_000,"2026-01-28"))
         val b=applyAutomaticSms(book().copy(plans=listOf(plan())),records,now).book
         assertEquals(75_000,b.entries.sumOf { it.principalPaid }); assertEquals(135_000,b.entries.sumOf { it.amount })
         assertEquals(60_000,b.entries.filter { it.planId==null }.sumOf { it.amount })
     }
-    @Test fun daysOneThroughTenAreAdditionalAndNextMonthResetsCap() {
+    @Test fun closingDayIsIncludedAndNextCycleResetsCap() {
         val records=listOf(sms("a",SmsType.PAYMENT,75_000,"2026-01-10"),sms("b",SmsType.PAYMENT,75_000,"2026-01-11"),sms("c",SmsType.PAYMENT,75_000,"2026-02-11"))
         val b=applyAutomaticSms(book().copy(plans=listOf(plan())),records,now).book
         assertEquals(150_000,b.entries.sumOf { it.principalPaid }); assertEquals(750_000,b.remaining(b.plans.single(),now))
@@ -85,7 +85,7 @@ class AutomaticSmsTest {
     @Test fun planFromSmsDoesNotDuplicatePurchaseAndPaymentsAreAllocatedAutomatically() {
         val created=sms("plan",SmsType.PLAN,240_000,"2026-01-12").let { it.copy(parsed=it.parsed.copy(months=12,monthly=20_000)) }
         val purchase=sms("purchase",SmsType.PURCHASE,240_000,"2026-01-11",300_000)
-        val payment=sms("pay",SmsType.PAYMENT,50_000,"2026-01-13",350_000)
+        val payment=sms("pay",SmsType.PAYMENT,50_000,"2026-02-13",350_000)
         val first=applyAutomaticSms(book(),listOf(payment,purchase,created),now)
         val second=applyAutomaticSms(first.book,first.records,now)
         assertEquals(first,second); assertEquals(1,second.book.plans.size)
@@ -95,7 +95,7 @@ class AutomaticSmsTest {
         assertEquals(350_000,second.book.liveBalance(now)!!.available)
     }
     @Test fun repaymentIncludesMonthlyPrincipalOnlyWhenNextPaymentWouldAllocateIt() {
-        val p=plan().copy(paidBeforeTracking=1)
+        val p=plan().copy(paidBeforeTracking=1,firstDue=LocalDate.of(2026,2,11))
         val b=book().copy(plans=listOf(p),checkpoints=listOf(Checkpoint("a",at("2026-02-01"),100_000,"bank")))
         val before=b.repaymentSummary(at("2026-02-10"))!!
         assertEquals(375_000,before.purchaseCapacity); assertEquals(275_000,before.purchasesToClear)
@@ -112,5 +112,94 @@ class AutomaticSmsTest {
         val b=applyAutomaticSms(book().copy(plans=listOf(plan())),listOf(first,second),now).book
         assertEquals(75_000,b.entries.sumOf { it.principalPaid }); assertEquals(110_000,b.entries.sumOf { it.amount })
         assertEquals(310_000,b.liveBalance(now)!!.available)
+    }
+    @Test fun endOfMonthAllocationWaitsUntilThirdAndIgnoresLateNotification() {
+        val b=book().copy(config=book().config.copy(closeDay=30,installmentDay=3))
+        val plan=sms("plan",SmsType.PLAN,240_000,"2026-01-15").let { it.copy(parsed=it.parsed.copy(months=12,monthly=20_000)) }
+        val before=sms("before",SmsType.PAYMENT,10_000,"2026-01-30",300_000)
+        val early=sms("early",SmsType.PAYMENT,5_000,"2026-02-01",305_000)
+        val after=sms("after",SmsType.PAYMENT,25_000,"2026-02-03",330_000)
+        val notice=sms("notice",SmsType.STATEMENT,20_100,"2026-02-05").let { it.copy(parsed=it.parsed.copy(due=LocalDate.of(2026,2,25))) }
+        val more=sms("extra",SmsType.PAYMENT,25_000,"2026-02-15",355_000)
+        val first=applyAutomaticSms(b,listOf(more,notice,after,early,before,plan),now)
+        val replay=applyAutomaticSms(first.book,first.records,now)
+        val p=replay.book.plans.single()
+        assertEquals(first,replay)
+        assertEquals(0L,replay.book.entries.filter { it.sourceId?.startsWith("auto:before:")==true }.sumOf { it.principalPaid })
+        assertEquals(0L,replay.book.entries.filter { it.sourceId?.startsWith("auto:early:")==true }.sumOf { it.principalPaid })
+        assertEquals(20_000L,replay.book.entries.filter { it.sourceId?.startsWith("auto:after:")==true }.sumOf { it.principalPaid })
+        assertEquals(20_000L,replay.book.entries.sumOf { it.principalPaid })
+        assertEquals(220_000L,replay.book.remaining(p,now))
+        assertEquals(355_000L,replay.book.liveBalance(now)!!.available)
+        assertEquals(1,replay.book.completedInstallments(p,now))
+        assertEquals(0L,replay.book.repaymentSummary(at("2026-02-15"))!!.principalInNextPayment)
+        assertEquals(0L,replay.book.repaymentSummary(at("2026-03-01"))!!.principalInNextPayment)
+        val goal=replay.book.repaymentSummary(at("2026-03-01"))!!
+        assertEquals(20_000L,goal.cyclePrincipal)
+        assertEquals(goal.purchasesToClear+20_000,goal.targetBeforeClose)
+        assertEquals(20_000L,replay.book.repaymentSummary(at("2026-03-03"))!!.principalInNextPayment)
+        assertEquals(LocalDate.of(2026,2,3),b.installmentDate(at("2026-01-31")))
+    }
+    @Test fun priorInstallmentUsesExistingCashAndDoesNotCoverCurrentCycle() {
+        val initial=book().copy(config=book().config.copy(closeDay=30,installmentDay=3))
+        val plan=sms("plan",SmsType.PLAN,240_000,"2026-01-15").let { it.copy(parsed=it.parsed.copy(months=12,monthly=20_000)) }
+        val old=sms("old",SmsType.PAYMENT,21_000,"2026-02-01",300_000)
+        val buy=sms("buy",SmsType.PURCHASE,200_000,"2026-02-20",100_000)
+        val before=applyAutomaticSms(initial,listOf(plan,old,buy),now)
+        val p=before.book.plans.single()
+        val prior=PriorAllocation(p.id,old.id,now)
+        val first=applyAutomaticSms(before.book.copy(priorAllocations=listOf(prior)),before.records,now)
+        val replay=applyAutomaticSms(first.book,first.records.reversed(),now)
+        val b=replay.book
+        assertEquals(21_000L,b.entries.filter { it.kind==Kind.PAYMENT }.sumOf { it.amount })
+        assertEquals(20_000L,b.entries.filter { it.sourceId?.contains(":prior:")==true }.sumOf { it.principalPaid })
+        assertEquals(1_000L,b.entries.filter { it.kind==Kind.PAYMENT && it.planId==null }.sumOf { it.amount })
+        assertEquals(before.book.balances(now).debt,b.balances(now).debt)
+        assertEquals(100_000L,b.liveBalance(now)!!.available)
+        assertEquals(220_000L,b.remaining(p,now))
+        assertEquals(1,b.completedInstallments(p,now))
+        assertEquals(0L,b.principalPaidIn(p,b.billingMonth(at("2026-02-20"))))
+        val target=b.repaymentSummary(at("2026-02-20"))!!
+        assertEquals(880_000L,target.purchasesToClear)
+        assertEquals(20_000L,target.cyclePrincipal)
+        assertEquals(900_000L,target.targetBeforeClose)
+        val next=sms("current",SmsType.PAYMENT,target.targetBeforeClose,"2026-02-25",1_000_000)
+        val paid=applyAutomaticSms(b,replay.records+next,now).book
+        assertEquals(2,paid.completedInstallments(p,now))
+        assertEquals(0L,paid.repaymentSummary(at("2026-02-25"))!!.targetBeforeClose)
+        assertEquals(921_000L,paid.entries.filter { it.kind==Kind.PAYMENT }.sumOf { it.amount })
+        val removed=applyAutomaticSms(b.copy(priorAllocations=emptyList()),replay.records,now).book
+        assertEquals(before.book.entries,removed.entries)
+    }
+    @Test fun priorInstallmentCannotInventPaymentOrExceedItsAmount() {
+        val b=book().copy(plans=listOf(plan()))
+        val short=sms("short",SmsType.PAYMENT,1_000,"2026-01-12",300_000)
+        assertThrows(IllegalArgumentException::class.java) {
+            applyAutomaticSms(b.copy(priorAllocations=listOf(PriorAllocation("p","short",now))),listOf(short),now)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            applyAutomaticSms(b.copy(priorAllocations=listOf(PriorAllocation("p","missing",now))),emptyList(),now)
+        }
+    }
+    @Test fun priorAndCurrentInstallmentsKeepFractionalPrincipalExact() {
+        val p=plan(principal=240_001).copy(firstDue=LocalDate.of(2026,1,10))
+        val prior=sms("old",SmsType.PAYMENT,25_000,"2026-01-11",300_000)
+        val next=sms("next",SmsType.PAYMENT,25_000,"2026-01-20",325_000)
+        val b=applyAutomaticSms(book().copy(plans=listOf(p),priorAllocations=listOf(PriorAllocation(p.id,prior.id,now))),listOf(prior,next),now).book
+        assertEquals(40_001L,b.entries.sumOf { it.principalPaid })
+        assertEquals(50_000L,b.entries.sumOf { it.amount })
+        assertEquals(200_000L,b.remaining(p,now))
+    }
+    @Test fun issuedCardFeeIncludesVatOnceAndUsesLaterBankAnchor() {
+        val at=at("2026-01-15")
+        val text="عزيزي العميل, تم خصم مبلغ Annual Fee + VAT من بطاقة Visa الائتمانية (9876). المبلغ: 115.00 ريال سعودي"
+        val parsed=SmsParser.parse("SAB",text,at,setOf("SAB"))
+        assertEquals(SmsType.FEE,parsed.type)
+        val record=SmsRecord("fee",parsed,at)
+        val pay=sms("pay",SmsType.PAYMENT,10_000,"2026-01-16",300_000)
+        val result=applyAutomaticSms(book(),listOf(record,pay),now)
+        assertEquals(11_500L,result.book.entries.single { it.kind==Kind.FEE }.amount)
+        assertEquals(300_000L,result.book.liveBalance(now)!!.available)
+        assertEquals(result,applyAutomaticSms(result.book,result.records,now))
     }
 }

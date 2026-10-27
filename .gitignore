@@ -17,4 +17,7 @@ private-data/
 *.sms
 *.db
 *.enc
+*tracking-profile*.json
+*dashboard-data*.json
+*.pdf
 captures/

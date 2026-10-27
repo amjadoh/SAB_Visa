@@ -102,9 +102,9 @@ class LedgerTest {
         val s=Statement("s",LocalDate.of(2026,2,1),LocalDate.of(2026,2,25),100)
         invalid { Book(config(),entries=listOf(entry(Kind.PAYMENT,100).copy(statementId="s")),statements=listOf(s)).validate() }
     }
-    @Test fun cycleCutoffIsRiyadhMidnightOnDayTen() {
-        val before=cycle(Instant.parse("2026-02-09T20:59:59Z"),10)
-        val after=cycle(Instant.parse("2026-02-09T21:00:00Z"),10)
+    @Test fun cycleCutoffIsRiyadhMidnightAfterClosingDay() {
+        val before=cycle(Instant.parse("2026-02-10T20:59:59Z"),10)
+        val after=cycle(Instant.parse("2026-02-10T21:00:00Z"),10)
         assertEquals(LocalDate.of(2026,2,10),before.statementDate)
         assertEquals(LocalDate.of(2026,3,10),after.statementDate)
         assertEquals(before.endExclusive,after.start)
@@ -112,6 +112,17 @@ class LedgerTest {
     @Test fun decemberCycleAndLeapYear() {
         assertEquals(LocalDate.of(2027,1,10),cycle(Instant.parse("2026-12-31T12:00:00Z"),10).statementDate)
         assertEquals(LocalDate.of(2024,3,10),cycle(Instant.parse("2024-02-29T12:00:00Z"),10).statementDate)
+    }
+    @Test fun closingThirtyOrThirtyOneClampsFebruaryWithoutDriftingMarch() {
+        for(day in listOf(30,31)) {
+            val feb=cycle(Instant.parse("2026-02-28T20:59:59Z"),day)
+            val march=cycle(Instant.parse("2026-02-28T21:00:00Z"),day)
+            assertEquals(LocalDate.of(2026,2,28),feb.statementDate)
+            assertEquals(LocalDate.of(2026,3,day),march.statementDate)
+            assertEquals(feb.endExclusive,march.start)
+            assertEquals(LocalDate.of(2024,2,29),cycle(Instant.parse("2024-02-29T20:59:59Z"),day).statementDate)
+            assertEquals(LocalDate.of(2027,1,day),cycle(Instant.parse("2026-12-31T21:00:00Z"),day).statementDate)
+        }
     }
     @Test fun decimalInputIsExactAndRejectsAmbiguity() {
         assertEquals(123456,money("١٬٢٣٤٫٥٦")); assertEquals(123456,money("۱,۲۳۴.۵۶"))

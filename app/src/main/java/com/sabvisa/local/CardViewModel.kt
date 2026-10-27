@@ -42,4 +42,23 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
         require(limit in 1..MAX_MONEY) { "أدخل الحد الائتماني الجديد" }
         b.copy(limitChanges=b.limitChanges+LimitChange(id(),Instant.now(),limit))
     }
+    fun importTracking(uri: android.net.Uri) = action {
+        val text=getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+            val bytes=ByteArray(65537)
+            var size=0
+            while(size<bytes.size) {
+                val n=input.read(bytes,size,bytes.size-size)
+                if(n<0) break
+                size+=n
+            }
+            require(size<=65536) { "ملف إعدادات التتبع كبير جداً" }
+            String(bytes,0,size,Charsets.UTF_8)
+        } ?: error("تعذرت قراءة إعدادات التتبع")
+        vault.importTrackingProfile(text)
+        status.value="اعتمدت إعدادات التتبع؛ يلزم مطابقتها مع الكشف التالي"
+    }
+    fun approvePrior(planId: String, paymentId: String) = updateBook { b ->
+        b.copy(priorAllocations=b.priorAllocations.filterNot { it.planId==planId }+PriorAllocation(planId,paymentId,Instant.now()))
+    }
+    fun removePrior(planId: String) = updateBook { b -> b.copy(priorAllocations=b.priorAllocations.filterNot { it.planId==planId }) }
 }

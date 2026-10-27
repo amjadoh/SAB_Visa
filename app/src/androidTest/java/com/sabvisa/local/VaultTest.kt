@@ -50,15 +50,47 @@ class VaultTest {
         val plan="تم تحويل العملية الشرائية بمبلغ س.ر 2,400.00 على البطاقة الائتمانية9876 الى12 قسط شهرى, مبلغ القسط س.ر 200.00, الربح الشهرى .00%و0 رسوم ادارية."
         assertTrue(vault.ingest("SAB",plan,at))
         assertFalse(vault.ingest("SAB",plan,at.plusSeconds(60)))
-        val payment="بطاقة ائتمانية: تأكيد السداد تم سداد بطاقتك Visa (***9876) بمبلغ SAR 500.00 في: 2026-01-22 12:00:00 الرصيد: SAR 7500.00"
-        assertTrue(vault.ingest("SAB",payment,at.plusSeconds(86400)))
+        val payment="بطاقة ائتمانية: تأكيد السداد تم سداد بطاقتك Visa (***9876) بمبلغ SAR 500.00 في: 2026-02-03 12:00:00 الرصيد: SAR 7500.00"
+        assertTrue(vault.ingest("SAB",payment,Instant.parse("2026-02-03T09:00:00Z")))
         val loaded=vault.load()
         assertEquals(1,loaded.book!!.plans.size)
         assertEquals(220000L,loaded.book.remaining(loaded.book.plans.single(),Instant.now()))
         assertEquals(50000L,loaded.book.entries.sumOf { it.amount })
         assertEquals(750000L,loaded.book.liveBalance(Instant.now())!!.available)
+        assertEquals(30,loaded.book.config.closeDay)
+        assertEquals(3,loaded.book.config.installmentDay)
+        vault.change { d -> d.copy(book=d.book!!.copy(config=d.book.config.copy(closeDay=10))) }
+        assertEquals(240000L,vault.load().book!!.remaining(vault.load().book!!.plans.single(),Instant.now()))
+        vault.change { d -> d.copy(book=d.book!!.copy(config=d.book.config.copy(closeDay=30))) }
+        assertEquals(220000L,vault.load().book!!.remaining(vault.load().book!!.plans.single(),Instant.now()))
+        assertEquals(50000L,vault.load().book!!.entries.sumOf { it.amount })
         vault.change { d -> d.copy(book=d.book!!.copy(limitChanges=listOf(LimitChange("raise",Instant.now(),1200000)))) }
         assertEquals(1200000L,vault.load().book!!.limitAt(Instant.now()))
         assertEquals(950000L,vault.load().book!!.liveBalance(Instant.now())!!.available)
+    }
+    @Test fun priorTrackingProfilePersistsAndReplaysWithoutNewMoney() {
+        val at=Instant.parse("2026-01-01T00:00:00Z")
+        vault.change { VaultData(Book(Config(1200000,0,at,"9876"))) }
+        val plan="تم تحويل العملية الشرائية بمبلغ س.ر 2,400.00 على البطاقة الائتمانية9876 الى12 قسط شهرى, مبلغ القسط س.ر 200.00, الربح الشهرى .00%و0 رسوم ادارية."
+        vault.ingest("SAB",plan,Instant.parse("2026-01-15T09:00:00Z"))
+        val payment="بطاقة ائتمانية: تأكيد السداد تم سداد بطاقتك Visa (***9876) بمبلغ SAR 210.00 في: 2026-02-01 12:00:00 الرصيد: SAR 3000.00"
+        vault.ingest("SAB",payment,Instant.parse("2026-02-01T09:00:00Z"))
+        val data=vault.load()
+        val pid=data.book!!.plans.single().id
+        val paymentId=data.inbox.single { it.parsed.type==SmsType.PAYMENT }.id
+        val profile="""{"version":1,"closeDay":30,"installmentDay":3,"priorAllocations":[{"planId":"$pid","paymentId":"$paymentId","approvedAt":"${Instant.now()}"}]}"""
+        vault.importTrackingProfile(profile)
+        vault.importTrackingProfile(profile)
+        val b=vault.load().book!!
+        assertEquals(1,b.priorAllocations.size)
+        assertEquals(21000L,b.entries.sumOf { it.amount })
+        assertEquals(220000L,b.remaining(b.plans.single(),Instant.now()))
+        assertEquals(300000L,b.liveBalance(Instant.now())!!.available)
+        assertEquals(20000L,b.repaymentSummary(Instant.parse("2026-02-20T09:00:00Z"))!!.cyclePrincipal)
+        vault.change { it }
+        assertEquals(b,vault.load().book)
+        val bad=profile.replace(paymentId,"missing-synthetic-payment")
+        try { vault.importTrackingProfile(bad); fail("Unknown payment must fail") } catch(_: IllegalArgumentException) { }
+        assertEquals(b,vault.load().book)
     }
 }

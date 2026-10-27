@@ -38,5 +38,9 @@ class DashboardTest {
         compose.onNodeWithTag("limit").performTextReplacement("15000")
         compose.onNodeWithText("حفظ",useUnmergedTree=true).performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("15000.00 ر.س").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("change-cycle").performScrollTo().performClick()
+        compose.onNodeWithTag("day").performTextReplacement("31")
+        compose.onNodeWithText("حفظ",useUnmergedTree=true).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("يوم الإقفال المسجل: 31").fetchSemanticsNodes().isNotEmpty() }
     }
 }

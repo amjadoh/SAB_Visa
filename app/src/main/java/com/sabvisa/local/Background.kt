@@ -64,9 +64,14 @@ class ReminderWorker(context: Context, params: WorkerParameters): Worker(context
             val today = LocalDate.now(RIYADH)
             val next = cycle(Instant.now(),b.config.closeDay).statementDate
             val closeSoon = today >= next.minusDays(3)
+            val target = today.withDayOfMonth(minOf(b.config.installmentDay,today.lengthOfMonth()))
+            val month = b.billingMonth(Instant.now())
+            val installmentSoon = today >= target.minusDays(2) && today <= target && b.plans.any {
+                b.remaining(it,Instant.now()) > 0 && b.monthlyPrincipal(it,month) > b.principalPaidIn(it,month,Instant.now())
+            }
             val dueSoon = b.statements.any { !it.due.isBefore(today) && it.due <= today.plusDays(3) && b.statementRemaining(it,Instant.now()) > 0 }
             val overdue = b.statements.any { it.due < today && b.statementRemaining(it,Instant.now()) > 0 }
-            if(closeSoon || dueSoon || overdue) notifyLocal(applicationContext,1,"مراجعة البطاقة", "راجع الكشف وتاريخ السداد والتسوية داخل التطبيق.")
+            if(closeSoon || dueSoon || overdue || installmentSoon) notifyLocal(applicationContext,1,"مراجعة البطاقة", "راجع الكشف وموعد القسط المخطط وتاريخ الاستحقاق داخل التطبيق.")
         }
         Result.success()
     } catch (_: Exception) { Result.failure() }
