@@ -39,6 +39,12 @@ class LedgerTest {
         converted.validate(); assertEquals(before.balances(later).available,converted.balances(later).available)
         assertEquals(before.balances(opening),converted.balances(opening))
     }
+    @Test fun newInstallmentPurchaseCountsOnceInBudgetAndDebt() {
+        val p=plan().copy(createdAt=later)
+        val b=Book(config(),listOf(p),listOf(entry(Kind.PURCHASE,p.principal),entry(Kind.ADJUSTMENT,-p.principal)))
+        b.validate(); assertEquals(700_000,b.balances(later).debt)
+        assertEquals(700_000,b.spending(opening,later.plusSeconds(1)))
+    }
     @Test fun fractionalInstallmentsSumToPrincipal() {
         for(principal in listOf(10_001L,700_001L,100_000L)) for(months in 1..120) {
             val p=Plan("p","test",principal,months,LocalDate.of(2026,1,31),opening)

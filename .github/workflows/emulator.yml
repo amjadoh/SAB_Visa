@@ -1,6 +1,12 @@
 name: Android emulator tests
 on:
+  push:
+    branches: [main]
+    paths: ['app/**', 'core/**', '.github/workflows/emulator.yml']
   workflow_dispatch:
+concurrency:
+  group: emulator-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -29,11 +35,15 @@ jobs:
           api-level: 35
           arch: x86_64
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest --no-daemon
+          script: |
+            ./gradlew :app:connectedDebugAndroidTest --no-daemon
+            adb pull /sdcard/Android/data/com.sabvisa.local/files/test-previews app/build/test-previews
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: emulator-reports
-          path: app/build/reports/androidTests/
+          path: |
+            app/build/reports/androidTests/
+            app/build/test-previews/
           if-no-files-found: ignore
           retention-days: 7

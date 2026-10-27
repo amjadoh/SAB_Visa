@@ -84,6 +84,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
     val status by vm.status.collectAsState()
     val busy by vm.busy.collectAsState()
     var tab by remember { mutableStateOf(0) }
+    var rowLimit by remember(tab) { mutableIntStateOf(100) }
     var form by remember { mutableStateOf<Form?>(null) }
     var erase by remember { mutableStateOf(false) }
     var voidEntry by remember { mutableStateOf<Entry?>(null) }
@@ -178,6 +179,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                             if(spending>b.config.budget) Text("تجاوزت الميزانية",color=MaterialTheme.colorScheme.error)
                         }
                         Text("دورة التخطيط ${c.start.atZone(RIYADH).toLocalDate()} حتى ${c.statementDate} (النهاية غير مشمولة): ${sar(b.spending(c.start,c.endExclusive))} ر.س")
+                        Text("الموازنة تشمل العمليات المسجلة بعد نقطة البداية فقط.")
                     }
                     b.checkpoints.maxByOrNull { it.at }?.let { p -> Panel("آخر مقارنة مع البنك") {
                         Text("${local(p.at)} • لدى البنك ${sar(p.bankAvailable)}")
@@ -196,7 +198,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                             val at=notFuture(instant(v.getValue("received"))); require(v.getValue("body").length<=10000); vm.paste(v.getValue("sender"),v.getValue("body"),at)
                         }
                     }) { Text("لصق رسالة دون صلاحيات") }
-                    data!!.inbox.filter { it.status=="NEW" }.sortedByDescending { it.received }.forEach { item ->
+                    data!!.inbox.filter { it.status=="NEW" }.sortedByDescending { it.received }.take(rowLimit).forEach { item ->
                         val p=item.parsed
                         Panel("${p.type} • ${p.last4 ?: "بطاقة غير محددة"}") {
                             Text("${p.amount?.let(::sar) ?: "—"} ر.س • ${local(p.at)}")
@@ -208,6 +210,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         }
                     }
                     if(data!!.inbox.none { it.status=="NEW" }) Text("لا رسائل معلقة")
+                    if(data!!.inbox.count { it.status=="NEW" }>rowLimit) TextButton(onClick={rowLimit+=100}) { Text("إظهار 100 رسالة إضافية") }
                 }
                 2 -> {
                     Text("خطط الأقساط",style=MaterialTheme.typography.titleLarge)
@@ -223,7 +226,10 @@ private data class Form(val title: String, val help: String, val fields: List<In
                             val adjustment=if(mode=="convert") {
                                 require(at>b.config.openingAt && b.balances(at).ordinary>=p.principal) { "الرصيد غير المقسط لا يغطي التحويل" }
                                 listOf(Entry(id(),Kind.ADJUSTMENT,-p.principal,at,"تحويل أصل شراء إلى خطة ${p.name}"))
-                            } else emptyList()
+                            } else if(mode=="new") listOf(
+                                Entry(id(),Kind.PURCHASE,p.principal,at,"شراء مقسط جديد: ${p.name}"),
+                                Entry(id(),Kind.ADJUSTMENT,-p.principal,at,"نقل أصل الشراء الجديد إلى خطة ${p.name}")
+                            ) else emptyList()
                             vm.updateBook { it.copy(plans=it.plans+p,entries=it.entries+adjustment) }
                         }
                     }) { Text("إضافة خطة أقساط") }
@@ -237,11 +243,12 @@ private data class Form(val title: String, val help: String, val fields: List<In
                     Text("سجل العمليات",style=MaterialTheme.typography.titleLarge)
                     Text("الإلغاء يحتفظ بالعملية في السجل ويعيد حساب الأرصدة. لتصحيح عملية ألغها ثم أدخل البديل.")
                     Button(onClick={showEntry()}) { Text("إضافة عملية يدوية") }
-                    b.entries.sortedByDescending { it.at }.forEach { e -> Panel(kindName(e.kind)+(if(e.voided) " — ملغاة" else "")) {
+                    b.entries.sortedByDescending { it.at }.take(rowLimit).forEach { e -> Panel(kindName(e.kind)+(if(e.voided) " — ملغاة" else "")) {
                         Text("${sar(e.amount)} ر.س • ${local(e.at)}"); Text(e.note)
                         if(e.principalPaid>0) Text("منها أصل قسط ${sar(e.principalPaid)}")
                         if(!e.voided) TextButton(onClick={voidEntry=e}) { Text("إلغاء العملية مع حفظ أثرها") }
                     } }
+                    if(b.entries.size>rowLimit) TextButton(onClick={rowLimit+=100}) { Text("إظهار 100 عملية إضافية") }
                 }
                 4 -> {
                     Panel("الخصوصية") {

@@ -49,6 +49,7 @@ data class Entry(val id: String, val kind: Kind, val amount: Long, val at: Insta
         require(amount in -MAX_MONEY..MAX_MONEY && (kind == Kind.ADJUSTMENT || amount > 0))
         require(principalPaid >= 0 && principalPaid <= amount.coerceAtLeast(0))
         require(principalPaid == 0L || (kind == Kind.PAYMENT && planId != null))
+        require(planId == null || kind == Kind.PAYMENT)
         require(statementId == null || kind == Kind.PAYMENT)
     }
 }

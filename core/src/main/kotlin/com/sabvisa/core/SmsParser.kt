@@ -58,7 +58,7 @@ object SmsParser {
             else -> SmsType.REVIEW
         }
         val value = amount(text.substringBefore("الرصيد:"))
-        val merchant = Regex("لدى (.*?) بمبلغ").find(text)?.groupValues?.get(1)
+        val merchant = Regex("لدى (.*?) بمبلغ").find(text)?.groupValues?.get(1)?.take(160)
         if (type == SmsType.REVIEW || value == null || value <= 0 || !Regex(currency, RegexOption.IGNORE_CASE).containsMatchIn(text) ||
             Regex("USD|EUR|GBP|AED", RegexOption.IGNORE_CASE).containsMatchIn(text))
             return ParsedSms(SmsType.REVIEW, last4=card, at=at, reason="صيغة غير مدعومة أو عملة تحتاج مبلغ الترحيل بالريال")
