@@ -15,7 +15,10 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
     val status = MutableStateFlow("")
     val busy = MutableStateFlow(false)
     val fatal = MutableStateFlow(false)
-    init { action { vault.load(); Unit } }
+    init { action { vault.change { it }; refreshSms(); status.value="المتابعة تلقائية من رسائل SMS" } }
+    private fun refreshSms() {
+        if(getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS)==android.content.pm.PackageManager.PERMISSION_GRANTED && vault.load().book!=null) importSms(getApplication())
+    }
     fun action(block: () -> Unit) {
         if(busy.value) return
         busy.value=true
@@ -30,23 +33,32 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
     fun updateBook(transform: (Book) -> Book) = action {
         vault.change { it.copy(book=transform(it.book ?: error("أكمل الإعداد"))) }; status.value="تم الحفظ محلياً"
     }
-    fun importAll() = action { status.value="أضيفت ${importSms(getApplication())} رسالة جديدة للمراجعة" }
-    fun paste(sender: String, body: String, received: Instant) = action {
-        status.value=if(vault.ingest(sender,body,received)) "أضيفت للمراجعة" else "تم التجاهل: مرسل غير معتمد أو رمز تحقق أو رسالة غير مالية أو مكررة"
-    }
-    fun dismiss(item: Inbox) = action { vault.change { d -> d.copy(inbox=d.inbox.map { if(it.id==item.id) it.copy(status="IGNORED") else it }) }; status.value="تم تجاهل الرسالة" }
-    fun accept(item: Inbox, entry: Entry? = null, statement: Statement? = null, checkpoint: Checkpoint? = null) = action {
-        vault.change { d ->
-            check(d.inbox.any { it.id==item.id && it.status=="NEW" }) { "عولجت الرسالة سابقاً" }
-            val b=d.book ?: error("أكمل الإعداد")
-            val p=item.parsed
-            require(p.last4 == null || p.last4==b.config.last4) { "الرسالة لبطاقة أخرى" }
-            // Same-value close payments with distinct sender events are flagged, never silently merged.
-            if(entry?.kind==Kind.PAYMENT) require(b.entries.none { !it.voided && it.kind==Kind.PAYMENT && it.amount==entry.amount && kotlin.math.abs(it.at.epochSecond-entry.at.epochSecond)<300 }) { "سداد مشابه خلال 5 دقائق؛ راجع السجل وأدخله يدوياً فقط إذا كان مستقلاً" }
-            require(listOfNotNull(entry,statement,checkpoint).size==1)
-            d.copy(book=b.copy(entries=b.entries+listOfNotNull(entry),statements=b.statements+listOfNotNull(statement),checkpoints=b.checkpoints+listOfNotNull(checkpoint)),
-                inbox=d.inbox.map { if(it.id==item.id) it.copy(status="ACCEPTED") else it })
-        }; status.value="اعتمدت الرسالة"
+    fun importAll() = action { status.value="تمت مزامنة ${importSms(getApplication())} رسالة جديدة تلقائياً" }
+    fun syncIfAllowed() {
+        if(data.value?.book!=null && getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS)==android.content.pm.PackageManager.PERMISSION_GRANTED) importAll()
     }
     fun erase() = action { scheduleReminders(getApplication(),false); vault.wipe(); fatal.value=false; status.value="حُذفت بيانات التطبيق المحلية" }
+    fun changeLimit(limit: Long) = updateBook { b ->
+        require(limit in 1..MAX_MONEY) { "أدخل الحد الائتماني الجديد" }
+        b.copy(limitChanges=b.limitChanges+LimitChange(id(),Instant.now(),limit))
+    }
+    fun importTracking(uri: android.net.Uri) = action {
+        val text=getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+            val bytes=ByteArray(65537)
+            var size=0
+            while(size<bytes.size) {
+                val n=input.read(bytes,size,bytes.size-size)
+                if(n<0) break
+                size+=n
+            }
+            require(size<=65536) { "ملف إعدادات التتبع كبير جداً" }
+            String(bytes,0,size,Charsets.UTF_8)
+        } ?: error("تعذرت قراءة إعدادات التتبع")
+        vault.importTrackingProfile(text)
+        status.value="اعتمدت إعدادات التتبع؛ يلزم مطابقتها مع الكشف التالي"
+    }
+    fun approvePrior(planId: String, paymentId: String) = updateBook { b ->
+        b.copy(priorAllocations=b.priorAllocations.filterNot { it.planId==planId }+PriorAllocation(planId,paymentId,Instant.now()))
+    }
+    fun removePrior(planId: String) = updateBook { b -> b.copy(priorAllocations=b.priorAllocations.filterNot { it.planId==planId }) }
 }

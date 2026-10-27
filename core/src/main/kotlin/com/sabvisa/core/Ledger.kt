@@ -22,18 +22,21 @@ fun id(): String = UUID.randomUUID().toString()
 
 data class Config(
     val limit: Long, val openingOrdinary: Long, val openingAt: Instant,
-    val last4: String, val closeDay: Int = 10, val budget: Long = 0,
-    val senders: Set<String> = setOf("SAB"), val reminders: Boolean = false
+    val last4: String, val closeDay: Int = 30, val budget: Long = 0,
+    val senders: Set<String> = setOf("SAB"), val reminders: Boolean = false,
+    val installmentDay: Int = 3
 ) {
     init {
         require(limit in 1..MAX_MONEY && openingOrdinary in -MAX_MONEY..MAX_MONEY)
-        require(last4.matches(Regex("[0-9]{4}")) && closeDay in 1..28 && budget in 0..MAX_MONEY)
+        require(last4.matches(Regex("[0-9]{4}")) && closeDay in 1..31 && budget in 0..MAX_MONEY)
+        require(installmentDay in 1..31)
         require(senders.isNotEmpty() && senders.size <= 10 && senders.all { it.isNotBlank() && it.length <= 40 })
     }
 }
 data class Plan(val id: String, val name: String, val principal: Long, val months: Int,
-                val firstDue: LocalDate, val createdAt: Instant) {
-    init { require(name.isNotBlank() && principal in 1..MAX_MONEY && months in 1..120 && principal >= months) }
+                val firstDue: LocalDate, val createdAt: Instant, val paidBeforeTracking: Int = 0) {
+    init { require(name.isNotBlank() && principal in 1..MAX_MONEY && months in 1..120 && principal >= months && paidBeforeTracking in 0..months) }
+    fun previousPrincipal(): Long = (0 until paidBeforeTracking).sumOf { installment(it) }
     fun installment(index: Int): Long {
         require(index in 0 until months)
         return principal / months + if (index < principal % months) 1 else 0
@@ -59,8 +62,17 @@ data class Statement(val id: String, val issued: LocalDate, val due: LocalDate, 
 data class Checkpoint(val id: String, val at: Instant, val bankAvailable: Long, val note: String) {
     init { require(bankAvailable in -MAX_MONEY..MAX_MONEY && note.isNotBlank()) }
 }
+data class LimitChange(val id: String, val at: Instant, val limit: Long) {
+    init { require(limit in 1..MAX_MONEY) }
+}
+/** One prior installment, allocated from an existing payment by the user's decision. */
+data class PriorAllocation(val planId: String, val paymentId: String, val approvedAt: Instant) {
+    init { require(planId.isNotBlank() && paymentId.isNotBlank()) }
+}
 data class Book(val config: Config, val plans: List<Plan> = emptyList(), val entries: List<Entry> = emptyList(),
-                val statements: List<Statement> = emptyList(), val checkpoints: List<Checkpoint> = emptyList()) {
+                val statements: List<Statement> = emptyList(), val checkpoints: List<Checkpoint> = emptyList(),
+                val limitChanges: List<LimitChange> = emptyList(),
+                val priorAllocations: List<PriorAllocation> = emptyList()) {
     fun validate() {
         require(plans.map { it.id }.distinct().size == plans.size)
         require(entries.map { it.id }.distinct().size == entries.size)
@@ -68,17 +80,25 @@ data class Book(val config: Config, val plans: List<Plan> = emptyList(), val ent
         require(entries.mapNotNull { it.sourceId }.distinct().size == entries.mapNotNull { it.sourceId }.size) { "الرسالة مسجلة سابقاً" }
         require(entries.all { it.at > config.openingAt }) { "العملية ضمن الرصيد الافتتاحي" }
         require(plans.all { it.createdAt >= config.openingAt })
+        require(limitChanges.all { it.at >= config.openingAt })
+        require(limitChanges.map { it.id }.distinct().size == limitChanges.size)
+        require(priorAllocations.map { it.planId }.distinct().size == priorAllocations.size) { "اعتماد سابق مكرر للخطة" }
+        priorAllocations.forEach { a ->
+            val plan=plans.singleOrNull { it.id==a.planId } ?: error("خطة الاعتماد السابق غير موجودة")
+            require(plan.paidBeforeTracking==0) { "للخطة رصيد سابق بالفعل؛ لا يكرر الاعتماد" }
+            require(entries.any { it.sourceId=="auto:${a.paymentId}:prior:${a.planId}" && it.principalPaid==plan.installment(0) }) { "رسالة سداد الاعتماد السابق غير متاحة أو غير صالحة" }
+        }
         entries.filterNot { it.voided }.forEach { e ->
             e.planId?.let { pid -> require(plans.any { it.id == pid && it.createdAt <= e.at }) { "خطة غير موجودة في تاريخ السداد" } }
             e.statementId?.let { sid -> require(statements.any { it.id == sid && e.at.atZone(RIYADH).toLocalDate() >= it.issued }) { "السداد يسبق الكشف" } }
         }
-        plans.forEach { p -> require(entries.filter { !it.voided && it.planId == p.id }.sumOf { it.principalPaid } <= p.principal) { "تخصيص السداد أكبر من أصل القسط" } }
+        plans.forEach { p -> require(entries.filter { !it.voided && it.planId == p.id }.sumOf { it.principalPaid } <= p.principal-p.previousPrincipal()) { "تخصيص السداد أكبر من أصل القسط" } }
     }
     fun balances(at: Instant): Balances {
         require(at >= config.openingAt)
         val active = entries.filter { !it.voided && it.at <= at }
         val principal = plans.filter { it.createdAt <= at }.sumOf { p ->
-            p.principal - active.filter { it.planId == p.id }.sumOf { it.principalPaid }
+            p.principal - p.previousPrincipal() - active.filter { it.planId == p.id }.sumOf { it.principalPaid }
         }
         val ordinary = active.fold(config.openingOrdinary) { total, e ->
             Math.addExact(total, when(e.kind) {
@@ -88,13 +108,14 @@ data class Book(val config: Config, val plans: List<Plan> = emptyList(), val ent
             })
         }
         val debt = Math.addExact(ordinary, principal)
-        return Balances(ordinary, principal, debt, Math.subtractExact(config.limit, debt))
+        return Balances(ordinary, principal, debt, Math.subtractExact(limitAt(at), debt))
     }
-    fun remaining(p: Plan, at: Instant): Long = p.principal - entries.filter {
+    fun limitAt(at: Instant): Long = limitChanges.filter { it.at <= at }.sortedBy { it.at }.lastOrNull()?.limit ?: config.limit
+    fun remaining(p: Plan, at: Instant): Long = p.principal - p.previousPrincipal() - entries.filter {
         !it.voided && it.planId == p.id && it.at <= at
     }.sumOf { it.principalPaid }
     fun duePrincipal(p: Plan, date: LocalDate): Long {
-        val scheduled = (0 until p.months).filter { p.due(it) <= date }.sumOf { p.installment(it) }
+        val scheduled = (p.paidBeforeTracking until p.months).filter { p.due(it-p.paidBeforeTracking) <= date }.sumOf { p.installment(it) }
         val paid = entries.filter { !it.voided && it.planId == p.id && it.at.atZone(RIYADH).toLocalDate() <= date }.sumOf { it.principalPaid }
         return (scheduled - paid).coerceAtLeast(0)
     }
@@ -109,9 +130,13 @@ data class Book(val config: Config, val plans: List<Plan> = emptyList(), val ent
 data class Balances(val ordinary: Long, val principal: Long, val debt: Long, val available: Long)
 data class Cycle(val start: Instant, val endExclusive: Instant, val statementDate: LocalDate)
 fun cycle(at: Instant, closeDay: Int): Cycle {
-    require(closeDay in 1..28)
-    val local = at.atZone(RIYADH)
-    val thisClose = local.toLocalDate().withDayOfMonth(closeDay)
-    val next = if (local.toLocalDate() < thisClose) thisClose else thisClose.plusMonths(1)
-    return Cycle(next.minusMonths(1).atStartOfDay(RIYADH).toInstant(), next.atStartOfDay(RIYADH).toInstant(), next)
+    require(closeDay in 1..31)
+    val date = at.atZone(RIYADH).toLocalDate()
+    fun close(month: YearMonth) = month.atDay(minOf(closeDay,month.lengthOfMonth()))
+    val month = YearMonth.from(date)
+    val nextMonth = if(date <= close(month)) month else month.plusMonths(1)
+    val next = close(nextMonth)
+    // Include the closing day; construct each month independently to avoid February drift.
+    return Cycle(close(nextMonth.minusMonths(1)).plusDays(1).atStartOfDay(RIYADH).toInstant(),
+        next.plusDays(1).atStartOfDay(RIYADH).toInstant(),next)
 }

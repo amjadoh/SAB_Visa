@@ -18,7 +18,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-data class Inbox(val id: String, val parsed: ParsedSms, val received: Instant, val status: String = "NEW")
+typealias Inbox = SmsRecord
 data class VaultData(val book: Book? = null, val inbox: List<Inbox> = emptyList())
 
 /** One process-wide lock covers receiver, worker and UI; write completes before observers change. */
@@ -49,7 +49,9 @@ class Vault private constructor(context: Context) {
         return result
     }
     @Synchronized fun change(transform: (VaultData) -> VaultData) {
-        val next = transform(load())
+        val proposed = transform(load())
+        val processed = proposed.book?.let { applyAutomaticSms(it,proposed.inbox,Instant.now()) }
+        val next = if(processed==null) proposed else proposed.copy(book=processed.book,inbox=processed.records)
         next.book?.validate()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key(true))
@@ -64,7 +66,7 @@ class Vault private constructor(context: Context) {
         val config = current.book?.config ?: return false
         val parsed = SmsParser.parse(sender, body, received, config.senders)
         if (parsed.type == SmsType.IGNORE) return false
-        val key = fingerprint(sender, body, parsed.at)
+        val key = messageFingerprint(sender, body, parsed)
         if (current.inbox.any { it.id == key }) return false
         // Persist extracted fields only. OTP, full account numbers and original SMS are never saved.
         change { it.copy(inbox=it.inbox + Inbox(key, parsed, received)) }
@@ -74,6 +76,19 @@ class Vault private constructor(context: Context) {
         file.delete()
         KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry(alias) }
         updates.value = VaultData()
+    }
+    /** Import only tracking decisions; amounts and bank events must already come from SMS. */
+    @Synchronized fun importTrackingProfile(text: String) {
+        require(text.toByteArray(Charsets.UTF_8).size<=65536) { "ملف إعدادات التتبع كبير جداً" }
+        val p=JSONObject(text)
+        require(p.getInt("version")==1) { "إصدار إعدادات التتبع غير مدعوم" }
+        val allocations=p.getJSONArray("priorAllocations").objects().map {
+            PriorAllocation(it.getString("planId"),it.getString("paymentId"),Instant.parse(it.getString("approvedAt")))
+        }
+        change { d ->
+            val b=d.book ?: error("أكمل الإعداد وزامن الرسائل أولاً")
+            d.copy(book=b.copy(config=b.config.copy(closeDay=p.getInt("closeDay"),installmentDay=p.getInt("installmentDay")),priorAllocations=allocations))
+        }
     }
     companion object {
         @Volatile private var instance: Vault? = null
@@ -88,26 +103,30 @@ private fun JSONObject.nullable(name: String): String? = if(isNull(name)) null e
 private fun obj(vararg pairs: Pair<String, Any?>): JSONObject = JSONObject().apply { pairs.forEach { (k,v) -> put(k,v ?: JSONObject.NULL) } }
 private fun encode(v: VaultData): JSONObject = obj("version" to 1,
     "book" to v.book?.let { b -> obj(
-        "config" to b.config.let { c -> obj("limit" to c.limit, "ordinary" to c.openingOrdinary, "at" to c.openingAt.toString(), "last4" to c.last4, "day" to c.closeDay, "budget" to c.budget, "senders" to JSONArray(c.senders.toList()), "reminders" to c.reminders) },
-        "plans" to JSONArray(b.plans.map { p -> obj("id" to p.id,"name" to p.name,"principal" to p.principal,"months" to p.months,"due" to p.firstDue.toString(),"at" to p.createdAt.toString()) }),
+        "config" to b.config.let { c -> obj("limit" to c.limit, "ordinary" to c.openingOrdinary, "at" to c.openingAt.toString(), "last4" to c.last4, "day" to c.closeDay, "budget" to c.budget, "senders" to JSONArray(c.senders.toList()), "reminders" to c.reminders,"installmentDay" to c.installmentDay) },
+        "plans" to JSONArray(b.plans.map { p -> obj("id" to p.id,"name" to p.name,"principal" to p.principal,"months" to p.months,"due" to p.firstDue.toString(),"at" to p.createdAt.toString(),"paidBefore" to p.paidBeforeTracking) }),
         "entries" to JSONArray(b.entries.map { e -> obj("id" to e.id,"kind" to e.kind.name,"amount" to e.amount,"at" to e.at.toString(),"note" to e.note,"source" to e.sourceId,"plan" to e.planId,"principal" to e.principalPaid,"statement" to e.statementId,"voided" to e.voided) }),
         "statements" to JSONArray(b.statements.map { s -> obj("id" to s.id,"issued" to s.issued.toString(),"due" to s.due.toString(),"amount" to s.amount) }),
-        "checkpoints" to JSONArray(b.checkpoints.map { c -> obj("id" to c.id,"at" to c.at.toString(),"amount" to c.bankAvailable,"note" to c.note) })
+        "checkpoints" to JSONArray(b.checkpoints.map { c -> obj("id" to c.id,"at" to c.at.toString(),"amount" to c.bankAvailable,"note" to c.note) }),
+        "limits" to JSONArray(b.limitChanges.map { c -> obj("id" to c.id,"at" to c.at.toString(),"limit" to c.limit) }),
+        "priorAllocations" to JSONArray(b.priorAllocations.map { a -> obj("planId" to a.planId,"paymentId" to a.paymentId,"approvedAt" to a.approvedAt.toString()) })
     ) },
     "inbox" to JSONArray(v.inbox.map { i -> obj("id" to i.id,"received" to i.received.toString(),"status" to i.status,
-        "parsed" to i.parsed.let { p -> obj("type" to p.type.name,"amount" to p.amount,"available" to p.available,"last4" to p.last4,"at" to p.at.toString(),"due" to p.due?.toString(),"reason" to p.reason,"merchant" to p.merchant) }) }))
+        "parsed" to i.parsed.let { p -> obj("type" to p.type.name,"amount" to p.amount,"available" to p.available,"last4" to p.last4,"at" to p.at.toString(),"due" to p.due?.toString(),"reason" to p.reason,"merchant" to p.merchant,"months" to p.months,"monthly" to p.monthly) }) }))
 private fun decode(v: JSONObject): VaultData {
     check(v.getInt("version") == 1)
     val book = if(v.isNull("book")) null else v.getJSONObject("book").let { b ->
         val c = b.getJSONObject("config")
-        Book(Config(c.getLong("limit"),c.getLong("ordinary"),Instant.parse(c.getString("at")),c.getString("last4"),c.getInt("day"),c.getLong("budget"),c.getJSONArray("senders").let { a -> (0 until a.length()).map { a.getString(it) }.toSet() },c.getBoolean("reminders")),
-            b.getJSONArray("plans").objects().map { p -> Plan(p.getString("id"),p.getString("name"),p.getLong("principal"),p.getInt("months"),LocalDate.parse(p.getString("due")),Instant.parse(p.getString("at"))) },
+        Book(Config(c.getLong("limit"),c.getLong("ordinary"),Instant.parse(c.getString("at")),c.getString("last4"),c.getInt("day"),c.getLong("budget"),c.getJSONArray("senders").let { a -> (0 until a.length()).map { a.getString(it) }.toSet() },c.getBoolean("reminders"),c.optInt("installmentDay",3)),
+            b.getJSONArray("plans").objects().map { p -> Plan(p.getString("id"),p.getString("name"),p.getLong("principal"),p.getInt("months"),LocalDate.parse(p.getString("due")),Instant.parse(p.getString("at")),p.optInt("paidBefore",0)) },
             b.getJSONArray("entries").objects().map { e -> Entry(e.getString("id"),Kind.valueOf(e.getString("kind")),e.getLong("amount"),Instant.parse(e.getString("at")),e.getString("note"),e.nullable("source"),e.nullable("plan"),e.getLong("principal"),e.nullable("statement"),e.getBoolean("voided")) },
             b.getJSONArray("statements").objects().map { s -> Statement(s.getString("id"),LocalDate.parse(s.getString("issued")),LocalDate.parse(s.getString("due")),s.getLong("amount")) },
-            b.getJSONArray("checkpoints").objects().map { p -> Checkpoint(p.getString("id"),Instant.parse(p.getString("at")),p.getLong("amount"),p.getString("note")) })
+            b.getJSONArray("checkpoints").objects().map { p -> Checkpoint(p.getString("id"),Instant.parse(p.getString("at")),p.getLong("amount"),p.getString("note")) },
+            b.optJSONArray("limits")?.objects()?.map { p -> LimitChange(p.getString("id"),Instant.parse(p.getString("at")),p.getLong("limit")) } ?: emptyList(),
+            b.optJSONArray("priorAllocations")?.objects()?.map { p -> PriorAllocation(p.getString("planId"),p.getString("paymentId"),Instant.parse(p.getString("approvedAt"))) } ?: emptyList())
     }
     return VaultData(book, v.getJSONArray("inbox").objects().map { i ->
         val p = i.getJSONObject("parsed")
-        Inbox(i.getString("id"),ParsedSms(SmsType.valueOf(p.getString("type")),p.nullable("amount")?.toLong(),p.nullable("available")?.toLong(),p.nullable("last4"),Instant.parse(p.getString("at")),p.nullable("due")?.let(LocalDate::parse),p.getString("reason"),p.nullable("merchant")),Instant.parse(i.getString("received")),i.getString("status"))
+        Inbox(i.getString("id"),ParsedSms(SmsType.valueOf(p.getString("type")),p.nullable("amount")?.toLong(),p.nullable("available")?.toLong(),p.nullable("last4"),Instant.parse(p.getString("at")),p.nullable("due")?.let(LocalDate::parse),p.getString("reason"),p.nullable("merchant"),p.nullable("months")?.toInt(),p.nullable("monthly")?.toLong()),Instant.parse(i.getString("received")),i.getString("status"))
     })
 }

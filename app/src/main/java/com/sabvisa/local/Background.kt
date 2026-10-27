@@ -26,7 +26,7 @@ class SmsReceiver : BroadcastReceiver() {
                 val sender = messages.first().originatingAddress ?: return@execute
                 val body = messages.joinToString("") { it.messageBody.orEmpty() }
                 val added = Vault.get(context).ingest(sender, body, Instant.ofEpochMilli(messages.first().timestampMillis))
-                if (added) notifyLocal(context, 2, "رسالة بطاقة للمراجعة", "افتح SAB Visa لمراجعة عملية جديدة. لم تُضف إلى الحسابات بعد.")
+                if (added) notifyLocal(context, 2, "تحديث البطاقة", "عولجت رسالة بطاقة جديدة محلياً؛ افتح التطبيق للاطلاع على التحديث.")
             } catch (_: Exception) {
                 // Never log SMS or reset the encrypted ledger on failure.
                 notifyLocal(context, 3, "تعذّر حفظ الرسالة", "افتح التطبيق ثم أعد الاستيراد عند توفر التخزين.")
@@ -64,9 +64,14 @@ class ReminderWorker(context: Context, params: WorkerParameters): Worker(context
             val today = LocalDate.now(RIYADH)
             val next = cycle(Instant.now(),b.config.closeDay).statementDate
             val closeSoon = today >= next.minusDays(3)
+            val target = today.withDayOfMonth(minOf(b.config.installmentDay,today.lengthOfMonth()))
+            val month = b.billingMonth(Instant.now())
+            val installmentSoon = today >= target.minusDays(2) && today <= target && b.plans.any {
+                b.remaining(it,Instant.now()) > 0 && b.monthlyPrincipal(it,month) > b.principalPaidIn(it,month,Instant.now())
+            }
             val dueSoon = b.statements.any { !it.due.isBefore(today) && it.due <= today.plusDays(3) && b.statementRemaining(it,Instant.now()) > 0 }
             val overdue = b.statements.any { it.due < today && b.statementRemaining(it,Instant.now()) > 0 }
-            if(closeSoon || dueSoon || overdue) notifyLocal(applicationContext,1,"مراجعة البطاقة", "راجع الكشف وتاريخ السداد والتسوية داخل التطبيق.")
+            if(closeSoon || dueSoon || overdue || installmentSoon) notifyLocal(applicationContext,1,"مراجعة البطاقة", "راجع الكشف وموعد القسط المخطط وتاريخ الاستحقاق داخل التطبيق.")
         }
         Result.success()
     } catch (_: Exception) { Result.failure() }
