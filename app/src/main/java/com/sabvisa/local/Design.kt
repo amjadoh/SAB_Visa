@@ -8,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.sabvisa.core.*
@@ -26,15 +27,17 @@ private val Gold=Color(0xFFBD9350)
     val completed=b.completedInstallments(p,now)
     var selected by remember(p.id) { mutableIntStateOf(-1) }
     Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        // Break long plans into rows so every touch target remains usable.
-        (0 until p.months).chunked(6).forEach { indices -> Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+        // Match the compact preview: one year per row; keep vertical tap space around the small marks.
+        (0 until p.months).chunked(12).forEach { indices -> Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
             indices.forEach { i ->
-                Surface(onClick={selected=i},modifier=Modifier.weight(1f).heightIn(min=44.dp),shape=RoundedCornerShape(8.dp),
+                Box(Modifier.weight(1f).height(44.dp).testTag("installment-${p.id}-${i+1}").clickable { selected=i },contentAlignment=androidx.compose.ui.Alignment.Center) {
+                Surface(modifier=Modifier.fillMaxWidth().height(28.dp),shape=RoundedCornerShape(5.dp),
                     color=if(i<completed) MaterialTheme.colorScheme.primary else if(i==completed) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer) {
-                    Box(Modifier.padding(10.dp)) { Text("${i+1}",style=MaterialTheme.typography.labelMedium) }
+                    Box(Modifier.fillMaxSize(),contentAlignment=androidx.compose.ui.Alignment.Center) { Text("${i+1}",style=MaterialTheme.typography.labelSmall,maxLines=1) }
+                }
                 }
             }
-            repeat(6-indices.size) { Spacer(Modifier.weight(1f)) }
+            repeat(12-indices.size) { Spacer(Modifier.weight(1f)) }
         } }
         Text("سددت $completed من ${p.months} • المتبقي ${sar(b.remaining(p,now))} ر.س",style=MaterialTheme.typography.bodyMedium)
     }
