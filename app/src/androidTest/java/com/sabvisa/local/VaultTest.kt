@@ -19,6 +19,21 @@ class VaultTest {
         context=ApplicationProvider.getApplicationContext(); vault=Vault.get(context); vault.wipe()
     }
     @After fun cleanup() { vault.wipe() }
+    @Test fun correctingCardReplaysStoredPlanAndKeepsUpdateConnection() {
+        vault.change { VaultData(Book(Config(1200000,0,Instant.EPOCH,"1111")),updateAccess=UpdateAccess("synthetic_read_credential_12345")) }
+        val plan="تم تحويل العملية الشرائية بمبلغ س.ر 2,400.00 على البطاقة الائتمانية9876 الى12 قسط شهرى, مبلغ القسط س.ر 200.00, الربح الشهرى .00%و0 رسوم ادارية."
+        val at=Instant.parse("2026-01-15T09:00:00Z")
+        vault.ingest("SAB",plan,at)
+        assertEquals("OTHER_CARD",vault.load().inbox.single().status)
+        assertTrue(vault.load().book!!.plans.isEmpty())
+        vault.change { it.copy(book=it.book!!.correctSmsCard("9876")) }
+        assertEquals("AUTO",vault.load().inbox.single().status)
+        assertEquals(1,vault.load().book!!.plans.size)
+        assertEquals("synthetic_read_credential_12345",vault.load().updateAccess.token)
+        assertFalse(vault.ingest("SAB",plan,at))
+        vault.change { it }
+        assertEquals(1,vault.load().book!!.plans.size)
+    }
     @Test fun encryptedRoundTripDuplicateImportAndCorruptionFailClosed() {
         val start=Instant.parse("2026-01-01T00:00:00Z")
         vault.change { VaultData(Book(Config(1000000,0,start,"9876"))) }

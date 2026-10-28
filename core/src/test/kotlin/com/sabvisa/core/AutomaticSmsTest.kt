@@ -11,6 +11,32 @@ class AutomaticSmsTest {
     private fun book()=Book(Config(1_200_000,0,start,"9876",closeDay=10,installmentDay=11))
     private fun plan(id: String="p",principal: Long=900_000,months: Int=12)=Plan(id,"Synthetic",principal,months,LocalDate.of(2026,1,11),start)
     private fun sms(id: String,type: SmsType,amount: Long?,date: String,balance: Long?=null)=SmsRecord(id,ParsedSms(type,amount,balance,"9876",at(date),reason="synthetic"),at(date).plusSeconds(3))
+    @Test fun correctingSmsCardRecoversPlanAndPaymentsWithoutDuplicateCash() {
+        val wrong=Book(Config(1_200_000,0,Instant.EPOCH,"1111",closeDay=30,installmentDay=3))
+        val plan=sms("plan",SmsType.PLAN,240_000,"2026-01-15").let { it.copy(parsed=it.parsed.copy(months=12,monthly=20_000)) }
+        val records=listOf(plan,sms("buy",SmsType.PURCHASE,10_000,"2026-02-01",300_000),sms("pay",SmsType.PAYMENT,25_000,"2026-02-03",325_000))
+        val excluded=applyAutomaticSms(wrong,records,now)
+        assertTrue(excluded.records.all { it.status=="OTHER_CARD" })
+        assertTrue(excluded.book.plans.isEmpty())
+        val recovered=applyAutomaticSms(excluded.book.correctSmsCard("٩٨٧٦"),excluded.records,now)
+        assertTrue(recovered.records.all { it.status=="AUTO" })
+        assertEquals(records.map { it.id },recovered.records.map { it.id })
+        assertEquals(1,recovered.book.plans.size)
+        assertEquals(220_000L,recovered.book.remaining(recovered.book.plans.single(),now))
+        assertEquals(25_000L,recovered.book.entries.filter { it.kind==Kind.PAYMENT }.sumOf { it.amount })
+        assertEquals(325_000L,recovered.book.liveBalance(now)!!.available)
+        assertEquals(recovered,applyAutomaticSms(recovered.book,recovered.records,now))
+    }
+    @Test fun correctionDoesNotMergeAnotherCardOrManualHistory() {
+        val b=Book(Config(1_200_000,0,Instant.EPOCH,"1111"))
+        val records=listOf(sms("match",SmsType.PURCHASE,100,"2026-01-12",500),sms("other",SmsType.PURCHASE,200,"2026-01-13",400).let { it.copy(parsed=it.parsed.copy(last4="2222")) })
+        val fixed=applyAutomaticSms(b.correctSmsCard("9876"),records,now)
+        assertEquals(100L,fixed.book.entries.sumOf { it.amount })
+        assertEquals("OTHER_CARD",fixed.records[1].status)
+        assertThrows(IllegalArgumentException::class.java) { b.copy(config=b.config.copy(openingOrdinary=100)).correctSmsCard("9876") }
+        assertThrows(IllegalArgumentException::class.java) { b.copy(plans=listOf(plan())).correctSmsCard("9876") }
+        assertThrows(IllegalArgumentException::class.java) { b.correctSmsCard("123") }
+    }
     @Test fun postsAndUsesAbsoluteBankBalanceWithoutDoubleAddingPayment() {
         val records=listOf(sms("buy",SmsType.PURCHASE,10_000,"2026-01-12",300_000),sms("pay",SmsType.PAYMENT,75_000,"2026-01-13",375_000))
         val b=applyAutomaticSms(book().copy(plans=listOf(plan())),records,now).book

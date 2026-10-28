@@ -132,7 +132,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                 Panel("إعداد مرة واحدة") {
                     Text("حدد الحد الائتماني وآخر أربع خانات. يقرأ التطبيق الشراء والسداد والرصيد من رسائل SAB تلقائياً؛ وتنشأ خطط الأقساط من رسالة التأكيد دون إدخال المبلغ أو المدة.")
                     Button(modifier=Modifier.testTag("setup"),onClick={
-                        form=Form("إعداد البطاقة","الحد المسجل قابل للتعديل لاحقاً من الإعدادات. لا تدخل رقم البطاقة الكامل.",listOf(Input("limit","الحد الائتماني بالريال","10000"),Input("last4","آخر أربع خانات"))) { values ->
+                        form=Form("إعداد البطاقة","أدخل آخر أربع خانات من رقم البطاقة كما تظهر في رسالة البنك، وليست الرقم السري PIN. لا تدخل رقم البطاقة الكامل. يمكن تصحيحها لاحقاً من الإعدادات.",listOf(Input("limit","الحد الائتماني بالريال","10000"),Input("last4","آخر 4 خانات من البطاقة في SMS؛ ليست PIN"))) { values ->
                             val config=Config(positive(values.getValue("limit")),0,Instant.EPOCH,digits(values.getValue("last4")))
                             vm.action { vm.vault.change { check(it.book==null); it.copy(book=Book(config)) }; vm.status.value="تم الإعداد؛ فعّل قراءة رسائل SAB مرة واحدة" }
                         }
@@ -190,11 +190,12 @@ private data class Form(val title: String, val help: String, val fields: List<In
                 1 -> {
                     Text("رسائل البطاقة",style=MaterialTheme.typography.titleLarge)
                     Text("الرسائل الواضحة تُحتسب تلقائياً. غير المدعوم أو المختلف في البطاقة يُستبعد من الحسابات.")
+                    if(data!!.inbox.any { it.status=="OTHER_CARD" }) Text("توجد رسائل برقم بطاقة لا يطابق الإعداد. إذا كانت بطاقتك، استخدم «تصحيح رقم البطاقة» في الإعدادات بالخانات الظاهرة في SMS، وليست الرقم السري.",style=MaterialTheme.typography.bodySmall)
                     OutlinedButton(onClick={consent=true}) { Text("صلاحية قراءة الرسائل") }
                     OutlinedButton(onClick={vm.importAll()},enabled=!busy) { Text("مزامنة الرسائل التاريخية") }
                     data!!.inbox.sortedByDescending { it.parsed.at }.take(rows).forEach { item ->
                         val p=item.parsed
-                        val label=when(item.status) { "AUTO" -> "احتُسبت تلقائياً"; "DUPLICATE" -> "مكررة؛ لم تحتسب"; "OTHER_CARD" -> "بطاقة أخرى"; "LEGACY" -> "سجل سابق محفوظ"; "HISTORY" -> "ضمن بداية التتبع السابقة"; "FUTURE" -> "تاريخ مستقبلي؛ مستبعدة"; "IGNORED" -> "مستبعدة"; else -> "تحتاج تحققاً؛ لم تحتسب" }
+                        val label=when(item.status) { "AUTO" -> "احتُسبت تلقائياً"; "DUPLICATE" -> "مكررة؛ لم تحتسب"; "OTHER_CARD" -> "رقم البطاقة غير مطابق للإعداد"; "LEGACY" -> "سجل سابق محفوظ"; "HISTORY" -> "ضمن بداية التتبع السابقة"; "FUTURE" -> "تاريخ مستقبلي؛ مستبعدة"; "IGNORED" -> "مستبعدة"; else -> "تحتاج تحققاً؛ لم تحتسب" }
                         Panel(label) {
                             Text("${p.last4 ?: "بطاقة غير محددة"} • ${local(p.at)}")
                             p.amount?.let { Text("${sar(it)} ر.س") }
@@ -241,6 +242,16 @@ private data class Form(val title: String, val help: String, val fields: List<In
                     if(b.entries.size>rows) TextButton(onClick={rows+=100}) { Text("إظهار المزيد") }
                 }
                 4 -> {
+                    Panel("مطابقة البطاقة مع SMS") {
+                        Text("يجب أن تطابق الخانات رقم البطاقة الظاهر في رسالة البنك؛ لا تدخل الرقم السري PIN.")
+                        OutlinedButton(modifier=Modifier.testTag("change-card"),onClick={
+                            form=Form("تصحيح رقم البطاقة","أدخل آخر أربع خانات كما تظهر في SMS. يعيد التطبيق معالجة الرسائل المحفوظة ويُظهر الخطة المطابقة دون إعادة إدخال العمليات. لا تدخل PIN.",listOf(Input("last4","آخر 4 خانات من البطاقة في SMS؛ ليست PIN"))) { values ->
+                                val number=digits(values.getValue("last4").trim())
+                                require(number.matches(Regex("[0-9]{4}"))) { "أدخل أربع خانات من البطاقة كما تظهر في SMS" }
+                                vm.correctCard(number)
+                            }
+                        }) { Text("تصحيح رقم البطاقة") }
+                    }
                     Panel("الحد الائتماني") {
                         Text("${sar(b.limitAt(now))} ر.س",style=MaterialTheme.typography.titleLarge)
                         OutlinedButton(onClick={

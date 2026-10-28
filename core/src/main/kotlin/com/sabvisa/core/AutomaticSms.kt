@@ -7,6 +7,18 @@ import java.time.temporal.ChronoUnit
 
 data class SmsRecord(val id: String, val parsed: ParsedSms, val received: Instant, val status: String = "NEW")
 data class AutomaticResult(val book: Book, val records: List<SmsRecord>)
+/** Correct an SMS identifier; replay derives the matching card from retained source records. */
+fun Book.correctSmsCard(value: String): Book {
+    val corrected=config.copy(last4=digits(value.trim()))
+    if(corrected.last4==config.last4) return this
+    require(config.openingOrdinary==0L && config.openingAt==Instant.EPOCH &&
+        plans.all { it.id.startsWith("auto-plan:") } && entries.all { it.sourceId?.startsWith("auto:")==true } &&
+        statements.all { it.id.startsWith("auto:") } && checkpoints.all { it.id.startsWith("auto:") }) {
+        "لا يمكن تغيير رقم بطاقة مرتبطة ببداية تتبع أو سجل يدوي؛ يلزم فصل ذلك السجل أولاً"
+    }
+    require(priorAllocations.isEmpty()) { "ألغِ اعتماد القسط السابق قبل تصحيح رقم البطاقة، ثم أعد اعتماده بعد مطابقة الرسائل" }
+    return copy(config=corrected)
+}
 data class LiveBalance(val available: Long, val limit: Long, val anchor: Checkpoint, val estimated: Boolean) {
     val used: Long get() = limit - available
 }

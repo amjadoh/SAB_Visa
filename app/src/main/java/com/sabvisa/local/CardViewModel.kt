@@ -58,6 +58,7 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
         require(limit in 1..MAX_MONEY) { "أدخل الحد الائتماني الجديد" }
         b.copy(limitChanges=b.limitChanges+LimitChange(id(),Instant.now(),limit))
     }
+    fun correctCard(last4: String) = updateBook { it.correctSmsCard(last4) }
     fun importTracking(uri: android.net.Uri) = action {
         val text=getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
             val bytes=ByteArray(65537)
