@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,12 +29,12 @@ jobs:
       - run: chmod +x gradlew
       - run: ./gradlew :core:test :app:assembleDebug :app:lintDebug :app:assembleRelease :app:lintRelease --no-daemon
       - name: Record device-test build identity
-        if: contains(github.event.head_commit.message, '[device-test]')
+        if: github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[device-test]')
         run: |
           sha256sum app/build/outputs/apk/release/app-release-unsigned.apk > device-test-sha256.txt
-          printf '%s\n' "$GITHUB_SHA" > source-commit.txt
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > source-commit.txt
       - uses: actions/upload-artifact@v4
-        if: contains(github.event.head_commit.message, '[device-test]')
+        if: github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[device-test]')
         with:
           name: device-test-apk
           path: |
