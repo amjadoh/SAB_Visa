@@ -23,6 +23,18 @@ class DashboardTest {
         }
     }
     @After fun cleanup() { Vault.get(compose.activity).wipe() }
+    @Test fun surplusShowsNegativeNetAndZeroPayableAlongsideUnpaidCycle() {
+        Vault.get(compose.activity).change { d ->
+            val b=d.book!!
+            d.copy(book=b.copy(plans=b.plans.map { it.copy(firstDue=LocalDate.now(RIYADH).minusMonths(2)) },
+                checkpoints=listOf(Checkpoint("credit-balance",Instant.now().minusSeconds(1),900_000,"synthetic bank"))))
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("-850.00 ر.س").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("-850.00 ر.س").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("المطلوب دفعه حسب المتابعة 0.00 ر.س").assertExists()
+        compose.onNodeWithText("رصيد زائد لصالحك حسب المتابعة 850.00 ر.س").assertExists()
+        compose.onNodeWithText("قسط الدورة غير المسدد حسب التوزيع 350.00 ر.س").assertExists()
+    }
     @Test fun dashboardAndTabsShowSyntheticFinancialState() {
         compose.waitUntil(10_000) { compose.onAllNodesWithText("7400.00 ر.س").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("7400.00 ر.س").performScrollTo().assertIsDisplayed()

@@ -142,16 +142,18 @@ private data class Form(val title: String, val help: String, val fields: List<In
                 0 -> {
                     val live=b.liveBalance(now)
                     val summary=b.repaymentSummary(now)
-                    Panel("المطلوب قبل يوم ${b.config.closeDay}",true) {
-                        Text(summary?.let { "${sar(it.targetBeforeClose)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
+                    Panel("صافي المتابعة قبل يوم ${b.config.closeDay}",true) {
+                        Text(summary?.let { "${sar(it.netBeforeClose)} ر.س" } ?: "بانتظار رسالة رصيد",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
                         summary?.let {
-                            Text("المشتريات والرسوم ${sar(it.purchasesToClear)} ر.س")
+                            Text("المطلوب دفعه حسب المتابعة ${sar(it.targetBeforeClose)} ر.س")
+                            if(it.surplusBeforeClose>0) Text("رصيد زائد لصالحك حسب المتابعة ${sar(it.surplusBeforeClose)} ر.س")
+                            Text("صافي المشتريات والرسوم ${sar(it.ordinaryNet)} ر.س")
                             Text("قسط الدورة غير المسدد حسب التوزيع ${sar(it.cyclePrincipal)} ر.س")
                             if(it.cyclePrincipal>0 && it.principalInNextPayment==0L) Text("تخصيص القسط يبدأ ${b.installmentDate(now)}؛ السداد قبله إضافي ولا ينقص أصل الخطة.",style=MaterialTheme.typography.bodySmall)
                         }
                         live?.let { Text("استناداً إلى رصيد SMS بتاريخ ${local(it.anchor.at)}",style=MaterialTheme.typography.bodySmall) }
                         if(b.priorAllocations.isNotEmpty()) Text("قسط سابق باعتمادك؛ بانتظار مطابقة الكشف القادم",style=MaterialTheme.typography.bodySmall)
-                        Text("المجموع يشمل القسط مرة واحدة. المشتريات أو الرسوم اللاحقة تغير الهدف، والمستحق البنكي قد يختلف.",style=MaterialTheme.typography.bodySmall)
+                        Text("السالب زيادة حسب توزيع المتابعة، ولا يغيّر عدد الأقساط المسددة أو تصنيف البنك. يشمل الصافي القسط غير المسدد مرة واحدة؛ المشتريات والرسوم اللاحقة تستهلك الزيادة. طابق النتيجة مع الكشف.",style=MaterialTheme.typography.bodySmall)
                         Text("هدف يوم ${b.config.closeDay} لا يؤخر استحقاق البنك؛ سدد المستحق بحلول التاريخ المذكور في الكشف.",style=MaterialTheme.typography.bodySmall)
                     }
                     Panel(if(live?.estimated==true) "رصيد تقديري بعد آخر رسالة" else "رصيد البطاقة من SMS") {
@@ -159,7 +161,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         Text("الحد الائتماني ${sar(b.limitAt(now))} ر.س")
                         summary?.let { Text("سقف المشتريات بعد حجز الأقساط ${sar(it.purchaseCapacity)} ر.س") }
                         live?.let {
-                            Text("المستخدم من الحد ${sar(it.used)} ر.س")
+                            Text(if(it.used>=0) "المستخدم من الحد ${sar(it.used)} ر.س" else "المتاح يتجاوز الحد المسجل بمقدار ${sar(-it.used)} ر.س")
                             Text("وقت آخر رصيد: ${local(it.anchor.at)}",style=MaterialTheme.typography.bodySmall)
                         }
                         Text("يتحدث الرصيد عند وصول SMS. رسائل الإيداع والحوالات لا تدخل في حساب البطاقة.",style=MaterialTheme.typography.bodySmall)
@@ -169,8 +171,8 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         Text("موعد سداد القسط المخطط: يوم ${b.config.installmentDay} من الشهر")
                         Text("أصل الأقساط المتبقي ${sar(principal)} ر.س")
                         live?.let {
-                            Text("غير المقسط التقديري ${sar((it.used-principal).coerceAtLeast(0))} ر.س")
-                            if(principal>it.used.coerceAtLeast(0)) Text("راجع الخطة: أصل الأقساط المسجل أكبر من المستخدم حسب آخر رسالة.",color=MaterialTheme.colorScheme.error)
+                            Text("صافي غير المقسط التقديري ${sar(it.used-principal)} ر.س")
+                            if(principal>it.used) Text("الفرق السالب لصالحك وفق أصل الأقساط المسجل، ويحتاج المطابقة مع كشف البنك.",style=MaterialTheme.typography.bodySmall)
                         }
                         Text("بعد إقفال الدورة يوم ${b.config.closeDay}، يبدأ تخصيص أصل قسط واحد لكل خطة من موعد السداد المخطط يوم ${b.config.installmentDay}؛ ما قبله وما يزيد على القسط سداد إضافي. هذا تقدير متابعة وليس بياناً من البنك.",style=MaterialTheme.typography.bodySmall)
                     }

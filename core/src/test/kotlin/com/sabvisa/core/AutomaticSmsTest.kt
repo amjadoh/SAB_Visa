@@ -11,6 +11,62 @@ class AutomaticSmsTest {
     private fun book()=Book(Config(1_200_000,0,start,"9876",closeDay=10,installmentDay=11))
     private fun plan(id: String="p",principal: Long=900_000,months: Int=12)=Plan(id,"Synthetic",principal,months,LocalDate.of(2026,1,11),start)
     private fun sms(id: String,type: SmsType,amount: Long?,date: String,balance: Long?=null)=SmsRecord(id,ParsedSms(type,amount,balance,"9876",at(date),reason="synthetic"),at(date).plusSeconds(3))
+    @Test fun overpaymentKeepsSignedSurplusAndDoesNotPayFutureInstallments() {
+        val p=plan(principal=240_000)
+        val b=book().copy(plans=listOf(p),checkpoints=listOf(Checkpoint("opening",at("2026-02-01"),900_000,"synthetic bank")))
+        assertEquals(80_000L,b.repaymentSummary(at("2026-02-12"))!!.targetBeforeClose)
+        val paid=applyAutomaticSms(b,listOf(sms("overpay",SmsType.PAYMENT,100_000,"2026-02-12",1_000_000)),now)
+        val summary=paid.book.repaymentSummary(at("2026-02-12"))!!
+        assertEquals(-20_000L,summary.ordinaryNet)
+        assertEquals(-20_000L,summary.netBeforeClose)
+        assertEquals(0L,summary.targetBeforeClose)
+        assertEquals(20_000L,summary.surplusBeforeClose)
+        assertEquals(100_000L,paid.book.entries.sumOf { it.amount })
+        assertEquals(220_000L,paid.book.remaining(p,now))
+        assertEquals(1,paid.book.completedInstallments(p,now))
+        val next=paid.book.repaymentSummary(at("2026-03-12"))!!
+        assertEquals(20_000L,next.cyclePrincipal)
+        assertEquals(0L,next.netBeforeClose)
+        assertEquals(0L,next.targetBeforeClose)
+        assertEquals(0L,next.surplusBeforeClose)
+        assertEquals(paid,applyAutomaticSms(paid.book,paid.records,now))
+    }
+    @Test fun surplusOffsetsUnpaidCycleBeforeClampingPayableAmount() {
+        val p=plan(principal=240_000)
+        fun summary(available: Long, date: String="2026-02-12")=book().copy(plans=listOf(p),checkpoints=listOf(Checkpoint("balance",at("2026-02-01"),available,"synthetic bank"))).repaymentSummary(at(date))!!
+        val extra=summary(1_000_000)
+        assertEquals(-40_000L,extra.ordinaryNet)
+        assertEquals(20_000L,extra.cyclePrincipal)
+        assertEquals(-20_000L,extra.netBeforeClose)
+        assertEquals(0L,extra.paymentToClearPurchases)
+        assertEquals(0L,extra.targetBeforeClose)
+        assertEquals(20_000L,extra.surplusBeforeClose)
+        val exact=summary(980_000)
+        assertEquals(0L,exact.netBeforeClose)
+        assertEquals(0L,exact.targetBeforeClose)
+        assertEquals(0L,exact.surplusBeforeClose)
+        val partial=summary(970_000)
+        assertEquals(10_000L,partial.targetBeforeClose)
+        assertEquals(10_000L,partial.paymentToClearPurchases)
+        assertEquals(0L,partial.surplusBeforeClose)
+        val beforeDay=book().copy(config=book().config.copy(closeDay=30,installmentDay=3),plans=listOf(p),
+            checkpoints=listOf(Checkpoint("before-day",at("2026-01-31"),1_000_000,"synthetic bank"))).repaymentSummary(at("2026-02-01"))!!
+        assertEquals(0L,beforeDay.principalInNextPayment)
+        assertEquals(-20_000L,beforeDay.netBeforeClose)
+        assertEquals(0L,beforeDay.targetBeforeClose)
+    }
+    @Test fun laterPurchasesConsumeCreditWithoutDuplicateCashOrCalendarEntries() {
+        val b=book().copy(checkpoints=listOf(Checkpoint("credit",at("2026-02-01"),1_250_000,"synthetic bank")))
+        assertEquals(-50_000L,b.repaymentSummary(at("2026-02-02"))!!.netBeforeClose)
+        val first=applyAutomaticSms(b,listOf(sms("buy-one",SmsType.PURCHASE,20_000,"2026-02-03")),now)
+        assertEquals(30_000L,first.book.repaymentSummary(at("2026-02-04"))!!.surplusBeforeClose)
+        assertEquals(0L,first.book.repaymentSummary(at("2026-02-04"))!!.targetBeforeClose)
+        val second=applyAutomaticSms(first.book,first.records+sms("buy-two",SmsType.PURCHASE,40_000,"2026-02-05"),now)
+        assertEquals(10_000L,second.book.repaymentSummary(at("2026-02-06"))!!.targetBeforeClose)
+        assertEquals(0L,second.book.repaymentSummary(at("2026-02-06"))!!.surplusBeforeClose)
+        assertEquals(60_000L,second.book.entries.sumOf { it.amount })
+        assertEquals(second,applyAutomaticSms(second.book,second.records,now))
+    }
     @Test fun correctingSmsCardRecoversPlanAndPaymentsWithoutDuplicateCash() {
         val wrong=Book(Config(1_200_000,0,Instant.EPOCH,"1111",closeDay=30,installmentDay=3))
         val plan=sms("plan",SmsType.PLAN,240_000,"2026-01-15").let { it.copy(parsed=it.parsed.copy(months=12,monthly=20_000)) }

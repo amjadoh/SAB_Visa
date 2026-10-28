@@ -22,10 +22,13 @@ fun Book.correctSmsCard(value: String): Book {
 data class LiveBalance(val available: Long, val limit: Long, val anchor: Checkpoint, val estimated: Boolean) {
     val used: Long get() = limit - available
 }
-data class RepaymentSummary(val purchaseCapacity: Long, val purchasesToClear: Long, val principalInNextPayment: Long,
+data class RepaymentSummary(val purchaseCapacity: Long, val ordinaryNet: Long, val principalInNextPayment: Long,
                             val cyclePrincipal: Long = principalInNextPayment) {
-    val paymentToClearPurchases: Long get() = purchasesToClear + principalInNextPayment
-    val targetBeforeClose: Long get() = purchasesToClear + cyclePrincipal
+    val purchasesToClear: Long get() = ordinaryNet.coerceAtLeast(0)
+    val paymentToClearPurchases: Long get() = (ordinaryNet + principalInNextPayment).coerceAtLeast(0)
+    val netBeforeClose: Long get() = ordinaryNet + cyclePrincipal
+    val targetBeforeClose: Long get() = netBeforeClose.coerceAtLeast(0)
+    val surplusBeforeClose: Long get() = (-netBeforeClose).coerceAtLeast(0)
 }
 fun Book.repaymentSummary(at: Instant): RepaymentSummary? {
     val live=liveBalance(at) ?: return null
@@ -36,7 +39,7 @@ fun Book.repaymentSummary(at: Instant): RepaymentSummary? {
     }
     val capacity=live.limit-reserved
     val nextPayment=if(at.atZone(RIYADH).toLocalDate()<installmentDate(at)) 0 else monthly
-    return RepaymentSummary(capacity,(capacity-live.available).coerceAtLeast(0),nextPayment,monthly)
+    return RepaymentSummary(capacity,capacity-live.available,nextPayment,monthly)
 }
 fun Book.completedInstallments(plan: Plan, at: Instant): Int {
     val paid=plan.principal-remaining(plan,at)

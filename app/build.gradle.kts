@@ -10,12 +10,12 @@ android {
         applicationId = "com.sabvisa.local"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
+        versionCode = 4
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
-    buildTypes { getByName("debug") { versionNameSuffix = "-beta.2" } }
+    buildTypes { getByName("debug") { versionNameSuffix = "-beta.3" } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
