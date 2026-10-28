@@ -152,8 +152,7 @@ fun applyAutomaticSms(original: Book, records: List<SmsRecord>, now: Instant): A
             SmsType.BALANCE -> if(p.available==null) { finish("REVIEW"); return@forEach }
             else -> { finish("REVIEW"); return@forEach }
         }
-        // Rounded balance reminders are comparison-only, never a replacement for an exact transaction balance.
-        if(p.available!=null && p.type!=SmsType.BALANCE) book=book.copy(checkpoints=book.checkpoints+Checkpoint("$prefix:balance",p.at,p.available,"الرصيد الوارد في SMS"))
+        if(p.available!=null) book=book.copy(checkpoints=book.checkpoints+Checkpoint("$prefix:balance",p.at,p.available,"الرصيد الوارد في SMS"))
         finish("AUTO")
     }
     book.validate()

@@ -38,11 +38,11 @@ object ReleaseUpdates {
                 val apk=metadata.getString("apkName")
                 require(apk.matches(Regex("SAB_Visa-[0-9A-Za-z.+_-]+\\.apk")))
                 val assets=release.getJSONArray("assets")
-                val asset=(0 until assets.length()).map { assets.getJSONObject(it) }.singleOrNull {
-                    it.optString("name")==apk && it.optString("state")=="uploaded" && it.optLong("size") in 1..104857600
-                } ?: return@runCatching null
-                val digest=asset.optString("digest").removePrefix("sha256:").takeIf { it.matches(Regex("[a-f0-9]{64}")) }.orEmpty()
-                AppUpdate(number.toInt(),metadata.getString("versionName"),release.getString("tag_name"),asset.optLong("id"),asset.getLong("size"),digest).takeIf { it.newerThan(installed) }
+                require((0 until assets.length()).any {
+                    val asset=assets.getJSONObject(it)
+                    asset.optString("name")==apk && asset.optString("state")=="uploaded" && asset.optLong("size")>0
+                })
+                AppUpdate(number.toInt(),metadata.getString("versionName"),release.getString("tag_name")).takeIf { it.newerThan(installed) }
             }.getOrNull()
         }.maxByOrNull { it.code }
     }
@@ -79,8 +79,8 @@ object ReleaseUpdates {
     }
     fun check(context: Context): Boolean {
         val vault=Vault.get(context)
-        val access=vault.current().updateAccess
-        check(access.token.isNotEmpty()) { "اربط GitHub لفحص التحديثات الخاصة" }
+        val access=vault.load().updateAccess
+        if(access.token.isEmpty()) return false
         val found=fetch(access.token,installedCode(context))
         var notify=false
         vault.change { current ->
