@@ -23,6 +23,16 @@ class DashboardTest {
         }
     }
     @After fun cleanup() { Vault.get(compose.activity).wipe() }
+    @Test fun compactInstallmentsFitOneYearOnOneRowAndOpenDetails() {
+        compose.onNodeWithText("الأقساط",useUnmergedTree=true).performClick()
+        val first=compose.onNodeWithTag("installment-synthetic-plan-1")
+        val last=compose.onNodeWithTag("installment-synthetic-plan-12")
+        first.performScrollTo()
+        org.junit.Assert.assertEquals(first.fetchSemanticsNode().boundsInRoot.top,last.fetchSemanticsNode().boundsInRoot.top,1f)
+        last.performClick()
+        compose.onNodeWithText("القسط 12").assertIsDisplayed()
+        compose.onNodeWithText("إغلاق").performClick()
+    }
     @Test fun surplusShowsNegativeNetAndZeroPayableAlongsideUnpaidCycle() {
         Vault.get(compose.activity).change { d ->
             val b=d.book!!

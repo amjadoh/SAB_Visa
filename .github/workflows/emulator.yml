@@ -35,7 +35,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Build an isolated newer APK for installer verification tests
         run: |
-          ./gradlew :app:assembleDebug -PfixtureVersion=6 --no-daemon
+          ./gradlew :app:assembleDebug -PfixtureVersion=7 --no-daemon
           mkdir -p app/src/androidTest/assets
           cp app/build/outputs/apk/debug/app-debug.apk app/src/androidTest/assets/future-fixture.apk
       - uses: reactivecircus/android-emulator-runner@v2
