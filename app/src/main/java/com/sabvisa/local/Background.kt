@@ -35,21 +35,28 @@ class SmsReceiver : BroadcastReceiver() {
     }
 }
 
-fun importSms(context: Context): Int {
+@Synchronized fun importSms(context: Context, full: Boolean=false): Int {
     check(context.checkSelfPermission(Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED) { "صلاحية قراءة الرسائل غير مفعلة؛ استخدم اللصق اليدوي" }
-    val config = Vault.get(context).load().book?.config ?: error("أكمل الإعداد")
-    var count = 0
+    val vault=Vault.get(context)
+    val snapshot=vault.current()
+    val config = snapshot.book?.config ?: error("أكمل الإعداد")
+    val through=System.currentTimeMillis()
+    // Arrival date, not transaction date; overlap includes equal timestamps and late inserts.
+    val after=if(full) config.openingAt.toEpochMilli() else maxOf(config.openingAt.toEpochMilli(),snapshot.smsAfter-2*86400_000L)
+    val messages=mutableListOf<Triple<String,String,Instant>>()
+    var lastId=0L
     // Query only the explicitly approved sender IDs, after the opening snapshot.
     val placeholders = config.senders.joinToString(",") { "?" }
     context.contentResolver.query(Telephony.Sms.Inbox.CONTENT_URI,
-        arrayOf(Telephony.Sms.ADDRESS,Telephony.Sms.BODY,Telephony.Sms.DATE),
-        "address COLLATE NOCASE IN ($placeholders) AND date > ?",
-        (config.senders.toList() + config.openingAt.toEpochMilli().toString()).toTypedArray(), "date ASC")?.use { cursor ->
+        arrayOf(Telephony.Sms.ADDRESS,Telephony.Sms.BODY,Telephony.Sms.DATE,Telephony.Sms._ID),
+        "address COLLATE NOCASE IN ($placeholders) AND date > ? AND date <= ? AND (_id > ? OR date > ?)",
+        (config.senders.toList() + listOf(config.openingAt.toEpochMilli().toString(),through.toString(),if(full) "0" else snapshot.smsId.toString(),after.toString())).toTypedArray(), "date ASC")?.use { cursor ->
         while(cursor.moveToNext()) {
-            if(Vault.get(context).ingest(cursor.getString(0).orEmpty(),cursor.getString(1).orEmpty(),Instant.ofEpochMilli(cursor.getLong(2)))) count++
+            messages+=Triple(cursor.getString(0).orEmpty(),cursor.getString(1).orEmpty(),Instant.ofEpochMilli(cursor.getLong(2)))
+            lastId=maxOf(lastId,cursor.getLong(3))
         }
     } ?: error("تعذرت قراءة صندوق الرسائل")
-    return count
+    return vault.ingestBatch(messages,through,lastId)
 }
 fun scheduleReminders(context: Context, enabled: Boolean) {
     val manager = WorkManager.getInstance(context)
@@ -79,10 +86,11 @@ class ReminderWorker(context: Context, params: WorkerParameters): Worker(context
 fun notifyLocal(context: Context, id: Int, title: String, text: String): Boolean {
     if(Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
     val manager = context.getSystemService(NotificationManager::class.java)
-    manager.createNotificationChannel(NotificationChannel("local", "تذكيرات البطاقة",NotificationManager.IMPORTANCE_DEFAULT).apply { lockscreenVisibility=Notification.VISIBILITY_PRIVATE })
-    if(!manager.areNotificationsEnabled() || manager.getNotificationChannel("local").importance==NotificationManager.IMPORTANCE_NONE) return false
+    val channel=if(id==4) "app-updates" else "local"
+    manager.createNotificationChannel(NotificationChannel(channel,if(id==4) "تحديثات التطبيق" else "تذكيرات البطاقة",if(id==4) NotificationManager.IMPORTANCE_HIGH else NotificationManager.IMPORTANCE_DEFAULT).apply { lockscreenVisibility=Notification.VISIBILITY_PRIVATE })
+    if(!manager.areNotificationsEnabled() || manager.getNotificationChannel(channel).importance==NotificationManager.IMPORTANCE_NONE) return false
     val open = PendingIntent.getActivity(context,id,Intent(context,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-    manager.notify(id,NotificationCompat.Builder(context,"local").setSmallIcon(com.sabvisa.local.R.drawable.ic_card)
+    manager.notify(id,NotificationCompat.Builder(context,channel).setSmallIcon(com.sabvisa.local.R.drawable.ic_card)
         .setContentTitle(title).setContentText(text).setContentIntent(open).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())
     return true
 }
