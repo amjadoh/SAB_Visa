@@ -29,8 +29,9 @@ class DashboardTest {
             d.copy(book=b.copy(plans=b.plans.map { it.copy(firstDue=LocalDate.now(RIYADH).minusMonths(2)) },
                 checkpoints=listOf(Checkpoint("credit-balance",Instant.now().minusSeconds(1),900_000,"synthetic bank"))))
         }
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("-850.00 ر.س").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("-850.00 ر.س").performScrollTo().assertIsDisplayed()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("850.00 ر.س").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("كيف انحسب؟").performScrollTo().performClick()
+        compose.onNodeWithText("-850.00 ر.س").assertIsDisplayed()
         compose.onNodeWithText("المطلوب دفعه حسب المتابعة 0.00 ر.س").assertExists()
         compose.onNodeWithText("رصيد زائد لصالحك حسب المتابعة 850.00 ر.س").assertExists()
         compose.onNodeWithText("قسط الدورة غير المسدد حسب التوزيع 350.00 ر.س").assertExists()
@@ -42,7 +43,7 @@ class DashboardTest {
         compose.onNodeWithText("تسجيل سداد").assertDoesNotExist()
         compose.onNodeWithText("الأقساط",useUnmergedTree=true).performClick()
         compose.onNodeWithText("خطة تجريبية").assertExists()
-        compose.onNodeWithText("السجل",useUnmergedTree=true).performClick()
+        compose.onNodeWithText("الحركات",useUnmergedTree=true).performClick()
         compose.onNodeWithText("شراء تجريبي").assertExists()
         compose.onNodeWithText("الإعدادات",useUnmergedTree=true).performClick()
         compose.onNodeWithText("الخصوصية").assertExists()
