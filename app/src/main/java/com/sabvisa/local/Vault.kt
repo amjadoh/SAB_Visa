@@ -19,7 +19,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 typealias Inbox = SmsRecord
-data class VaultData(val book: Book? = null, val inbox: List<Inbox> = emptyList())
+data class VaultData(val book: Book? = null, val inbox: List<Inbox> = emptyList(), val updateAccess: UpdateAccess=UpdateAccess())
 
 /** One process-wide lock covers receiver, worker and UI; write completes before observers change. */
 class Vault private constructor(context: Context) {
@@ -102,6 +102,8 @@ private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map(::get
 private fun JSONObject.nullable(name: String): String? = if(isNull(name)) null else getString(name)
 private fun obj(vararg pairs: Pair<String, Any?>): JSONObject = JSONObject().apply { pairs.forEach { (k,v) -> put(k,v ?: JSONObject.NULL) } }
 private fun encode(v: VaultData): JSONObject = obj("version" to 1,
+    "updateAccess" to v.updateAccess.let { a -> obj("token" to a.token,"notifiedCode" to a.notifiedCode,"checkedAt" to a.checkedAt,
+        "available" to a.available?.let { u -> obj("code" to u.code,"name" to u.name,"tag" to u.tag) }) },
     "book" to v.book?.let { b -> obj(
         "config" to b.config.let { c -> obj("limit" to c.limit, "ordinary" to c.openingOrdinary, "at" to c.openingAt.toString(), "last4" to c.last4, "day" to c.closeDay, "budget" to c.budget, "senders" to JSONArray(c.senders.toList()), "reminders" to c.reminders,"installmentDay" to c.installmentDay) },
         "plans" to JSONArray(b.plans.map { p -> obj("id" to p.id,"name" to p.name,"principal" to p.principal,"months" to p.months,"due" to p.firstDue.toString(),"at" to p.createdAt.toString(),"paidBefore" to p.paidBeforeTracking) }),
@@ -128,5 +130,7 @@ private fun decode(v: JSONObject): VaultData {
     return VaultData(book, v.getJSONArray("inbox").objects().map { i ->
         val p = i.getJSONObject("parsed")
         Inbox(i.getString("id"),ParsedSms(SmsType.valueOf(p.getString("type")),p.nullable("amount")?.toLong(),p.nullable("available")?.toLong(),p.nullable("last4"),Instant.parse(p.getString("at")),p.nullable("due")?.let(LocalDate::parse),p.getString("reason"),p.nullable("merchant"),p.nullable("months")?.toInt(),p.nullable("monthly")?.toLong()),Instant.parse(i.getString("received")),i.getString("status"))
-    })
+    }, v.optJSONObject("updateAccess")?.let { a ->
+        UpdateAccess(a.optString("token"),a.optJSONObject("available")?.let { u -> AppUpdate(u.getInt("code"),u.getString("name"),u.getString("tag")) },a.optInt("notifiedCode"),a.optString("checkedAt"))
+    } ?: UpdateAccess())
 }

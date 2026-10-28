@@ -76,11 +76,13 @@ class ReminderWorker(context: Context, params: WorkerParameters): Worker(context
         Result.success()
     } catch (_: Exception) { Result.failure() }
 }
-fun notifyLocal(context: Context, id: Int, title: String, text: String) {
-    if(Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+fun notifyLocal(context: Context, id: Int, title: String, text: String): Boolean {
+    if(Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
     val manager = context.getSystemService(NotificationManager::class.java)
     manager.createNotificationChannel(NotificationChannel("local", "تذكيرات البطاقة",NotificationManager.IMPORTANCE_DEFAULT).apply { lockscreenVisibility=Notification.VISIBILITY_PRIVATE })
-    val open = PendingIntent.getActivity(context,0,Intent(context,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    if(!manager.areNotificationsEnabled() || manager.getNotificationChannel("local").importance==NotificationManager.IMPORTANCE_NONE) return false
+    val open = PendingIntent.getActivity(context,id,Intent(context,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     manager.notify(id,NotificationCompat.Builder(context,"local").setSmallIcon(com.sabvisa.local.R.drawable.ic_card)
         .setContentTitle(title).setContentText(text).setContentIntent(open).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())
+    return true
 }

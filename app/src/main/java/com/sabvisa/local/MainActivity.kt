@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -19,6 +20,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -97,6 +100,10 @@ private data class Form(val title: String, val help: String, val fields: List<In
     var form by remember { mutableStateOf<Form?>(null) }
     var consent by remember { mutableStateOf(false) }
     var erase by remember { mutableStateOf(false) }
+    var connectUpdates by remember { mutableStateOf(false) }
+    var updateToken by remember { mutableStateOf("") }
+    val context=androidx.compose.ui.platform.LocalContext.current
+    fun openPage(url: String) { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,android.net.Uri.parse(url))) }
     val b=data?.book
     val now=Instant.now()
     val debugBuild=(vm.getApplication<android.app.Application>().applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
@@ -111,6 +118,13 @@ private data class Form(val title: String, val help: String, val fields: List<In
             if(debugBuild) Text("نسخة تجريبية لاختبار القراءة والتنبيهات على الجوال",style=MaterialTheme.typography.bodySmall)
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if(status.isNotBlank()) Text(status,style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("status"))
+            data?.updateAccess?.available?.takeIf { it.newerThan(ReleaseUpdates.installedCode(context)) }?.let { update ->
+                Panel("يتوفر تحديث",true) {
+                    Text("الإصدار ${update.name} جاهز للتنزيل الخاص")
+                    Button(onClick={openPage(update.pageUrl)},modifier=Modifier.testTag("download-update")) { Text("تنزيل التحديث") }
+                    Text("يفتح GitHub في المتصفح؛ يلزم حساب له وصول للمستودع. لا يحدث تثبيت تلقائي.",style=MaterialTheme.typography.bodySmall)
+                }
+            }
             if(data==null) {
                 Text("جارٍ فتح التخزين المشفر، أو تعذّر فتحه. بياناتك لا تُستبدل تلقائياً.")
                 OutlinedButton(onClick={vm.action { vm.vault.load(); Unit }}) { Text("إعادة المحاولة") }
@@ -257,10 +271,25 @@ private data class Form(val title: String, val help: String, val fields: List<In
                     }
                     if(debugBuild) OutlinedButton(modifier=Modifier.testTag("test-notification"),onClick={
                         onNotifications()
-                        notifyLocal(vm.getApplication(),99,"اختبار تنبيهات SAB Visa","تنبيه تجريبي من التطبيق؛ لا يمثل عملية بنكية ولا يغير الرصيد.")
+                        val posted=notifyLocal(vm.getApplication(),99,"اختبار تنبيهات SAB Visa","تنبيه تجريبي من التطبيق؛ لا يمثل عملية بنكية ولا يغير الرصيد.")
+                        vm.status.value=if(posted) "أُرسل تنبيه الاختبار للنظام؛ تحقق من ظهوره على الجوال" else "اسمح بالإشعارات وقناة تذكيرات البطاقة، ثم اضغط الاختبار مجدداً"
                     }) { Text("إرسال تنبيه تجريبي") }
+                    Panel("تحديثات التطبيق الخاصة") {
+                        val access=data!!.updateAccess
+                        Text("الإصدار المثبت ${ReleaseUpdates.installedName(context)} • فحص رقم الإصدار من GitHub دون إرسال الرسائل أو الحسابات")
+                        if(access.token.isEmpty()) {
+                            Text("الربط اختياري. أنشئ رمزاً محدوداً لمستودع SAB_Visa، بصلاحية Contents: Read-only فقط، ثم أدخله هنا. يُحفظ مشفراً ولا يُرسل إلا إلى GitHub.",style=MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick={openPage(ReleaseUpdates.tokenSetupUrl)}) { Text("إنشاء رمز قراءة GitHub") }
+                            OutlinedButton(onClick={connectUpdates=true},modifier=Modifier.testTag("connect-updates")) { Text("ربط تنبيهات التحديث") }
+                        } else {
+                            Text("مرتبط؛ فحص تلقائي يومي تقريبي وعند فتح التطبيق")
+                            if(access.checkedAt.isNotBlank()) Text("آخر فحص: ${local(Instant.parse(access.checkedAt))}",style=MaterialTheme.typography.bodySmall)
+                            OutlinedButton(onClick={onNotifications();vm.checkUpdates()},enabled=!busy) { Text("فحص التحديث الآن") }
+                            TextButton(onClick={vm.disconnectUpdates()},enabled=!busy) { Text("إلغاء ربط التحديثات") }
+                        }
+                    }
                     Panel("الخصوصية") {
-                        Text("المعالجة والتخزين المشفر على جهازك. لا إذن إنترنت ولا إعلانات أو نسخ سحابي. لا نحفظ النص الأصلي أو رموز التحقق أو أرقام الحسابات الكاملة.")
+                        Text("المعالجة والتخزين المشفر على جهازك. الإنترنت لفحص إصدارات GitHub الخاصة فقط عند ربطه؛ لا تُرفع الرسائل أو الحسابات. لا إعلانات أو نسخ سحابي، ولا نحفظ النص الأصلي أو رموز التحقق أو أرقام الحسابات الكاملة.")
                         Text("لا يوجد قفل بيومتري مستقل أو تصدير في هذه النسخة. إزالة التطبيق تفقد بياناته. لا يضمن التطبيق تجنب الأرباح؛ كشف البنك وشروطه هما المرجع.",style=MaterialTheme.typography.bodySmall)
                     }
                     OutlinedButton(onClick={erase=true}) { Text("حذف بيانات التطبيق") }
@@ -269,6 +298,13 @@ private data class Form(val title: String, val help: String, val fields: List<In
         }
     }
     form?.let { FormDialog(it,busy) { form=null } }
+    if(connectUpdates) AlertDialog(onDismissRequest={connectUpdates=false;updateToken=""},title={Text("ربط تحديثات GitHub")},text={
+        Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            Text("أدخل رمز قراءة للمستودع المحدد فقط، لا كلمة مرور حسابك. لا ترسل الرمز في المحادثة. يمكنك إلغاؤه لاحقاً من إعدادات GitHub.")
+            OutlinedTextField(value=updateToken,onValueChange={updateToken=it},label={Text("رمز القراءة المقيد")},singleLine=true,
+                visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password,autoCorrectEnabled=false),modifier=Modifier.testTag("update-token"))
+        }
+    },confirmButton={TextButton(enabled=!busy && updateToken.isNotBlank(),onClick={vm.connectUpdates(updateToken);updateToken="";connectUpdates=false;onNotifications()}) { Text("ربط") }},dismissButton={TextButton(onClick={connectUpdates=false;updateToken=""}) { Text("إلغاء") }})
     if(consent) AlertDialog(onDismissRequest={consent=false},title={Text("قراءة رسائل SAB محلياً")},text={Text("بعد منح الإذن تُستورد الرسائل التاريخية للمرسل المعتمد وتُسجّل عمليات البطاقة تلقائياً. رموز التحقق والإيداعات والحوالات ومكافآت المحفظة مستبعدة. يمكنك سحب الإذن من إعدادات Android.")},confirmButton={TextButton(onClick={consent=false;onPermissions()}) { Text("متابعة") }},dismissButton={TextButton(onClick={consent=false}) { Text("إلغاء") }})
     if(erase) AlertDialog(onDismissRequest={erase=false},title={Text("حذف البيانات المحلية؟")},text={Text("يُحذف سجل التطبيق وخططه ومفتاحه دون نسخة احتياطية. رسائل الهاتف الأصلية لا تُحذف.")},confirmButton={TextButton(onClick={erase=false;vm.erase()}) { Text("حذف") }},dismissButton={TextButton(onClick={erase=false}) { Text("إلغاء") }})
 }

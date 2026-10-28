@@ -15,7 +15,7 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
     val status = MutableStateFlow("")
     val busy = MutableStateFlow(false)
     val fatal = MutableStateFlow(false)
-    init { action { vault.change { it }; refreshSms(); status.value="المتابعة تلقائية من رسائل SMS" } }
+    init { action { vault.change { it }; refreshSms(); scheduleUpdateChecks(application,vault.load().updateAccess.token.isNotEmpty()); status.value="المتابعة تلقائية من رسائل SMS" } }
     private fun refreshSms() {
         if(getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS)==android.content.pm.PackageManager.PERMISSION_GRANTED && vault.load().book!=null) importSms(getApplication())
     }
@@ -37,7 +37,23 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
     fun syncIfAllowed() {
         if(data.value?.book!=null && getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS)==android.content.pm.PackageManager.PERMISSION_GRANTED) importAll()
     }
-    fun erase() = action { scheduleReminders(getApplication(),false); vault.wipe(); fatal.value=false; status.value="حُذفت بيانات التطبيق المحلية" }
+    fun erase() = action { scheduleReminders(getApplication(),false); scheduleUpdateChecks(getApplication(),false); vault.wipe(); fatal.value=false; status.value="حُذفت بيانات التطبيق المحلية" }
+    fun connectUpdates(token: String) = action {
+        val trimmed=token.trim()
+        val available=ReleaseUpdates.fetch(trimmed,ReleaseUpdates.installedCode(getApplication()))
+        vault.change { it.copy(updateAccess=UpdateAccess(trimmed,available,checkedAt=Instant.now().toString())) }
+        scheduleUpdateChecks(getApplication(),true)
+        status.value="تم ربط تحديثات GitHub الخاصة؛ رمز القراءة محفوظ مشفراً على الجهاز"
+    }
+    fun disconnectUpdates() = action {
+        vault.change { it.copy(updateAccess=UpdateAccess()) }
+        scheduleUpdateChecks(getApplication(),false)
+        getApplication<Application>().getSystemService(android.app.NotificationManager::class.java).cancel(4)
+        status.value="أُلغي ربط التحديثات وحُذف الرمز المحلي؛ يمكنك إلغاء الرمز من GitHub أيضاً"
+    }
+    fun checkUpdates() = action {
+        status.value=if(ReleaseUpdates.check(getApplication())) "يتوفر تحديث؛ استخدم زر التنزيل داخل التطبيق" else "لا يوجد إصدار أحدث في فحص GitHub الحالي"
+    }
     fun changeLimit(limit: Long) = updateBook { b ->
         require(limit in 1..MAX_MONEY) { "أدخل الحد الائتماني الجديد" }
         b.copy(limitChanges=b.limitChanges+LimitChange(id(),Instant.now(),limit))
