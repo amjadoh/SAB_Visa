@@ -26,6 +26,21 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
       - run: ./gradlew :core:test :app:assembleDebug :app:lintDebug --no-daemon
+      - name: Record device-test build identity
+        if: contains(github.event.head_commit.message, '[device-test]')
+        run: |
+          sha256sum app/build/outputs/apk/debug/app-debug.apk > device-test-sha256.txt
+          printf '%s\n' "$GITHUB_SHA" > source-commit.txt
+      - uses: actions/upload-artifact@v4
+        if: contains(github.event.head_commit.message, '[device-test]')
+        with:
+          name: device-test-apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            device-test-sha256.txt
+            source-commit.txt
+          if-no-files-found: error
+          retention-days: 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

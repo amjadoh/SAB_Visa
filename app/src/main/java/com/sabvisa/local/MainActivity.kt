@@ -99,6 +99,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
     var erase by remember { mutableStateOf(false) }
     val b=data?.book
     val now=Instant.now()
+    val debugBuild=(vm.getApplication<android.app.Application>().applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0
     Scaffold(bottomBar={ if(b!=null) NavigationBar {
         listOf("الرئيسية","الرسائل","الأقساط","السجل","الإعدادات").forEachIndexed { index,label ->
             NavigationBarItem(selected=tab==index,onClick={tab=index},icon={Text(listOf("◉","✉","▦","≡","⚙")[index])},label={Text(label,style=MaterialTheme.typography.labelSmall)})
@@ -107,6 +108,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(padding).verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
             Text("SAB Visa",style=MaterialTheme.typography.headlineLarge,fontWeight=FontWeight.Bold)
             Text("متابعة تلقائية من رسائل البطاقة",color=MaterialTheme.colorScheme.secondary)
+            if(debugBuild) Text("نسخة تجريبية لاختبار القراءة والتنبيهات على الجوال",style=MaterialTheme.typography.bodySmall)
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if(status.isNotBlank()) Text(status,style=MaterialTheme.typography.bodySmall,modifier=Modifier.testTag("status"))
             if(data==null) {
@@ -253,6 +255,10 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         Text("تذكيرات محلية تقريبية")
                         Switch(checked=b.config.reminders,onCheckedChange={ enabled -> if(enabled) onNotifications(); vm.updateBook { scheduleReminders(vm.getApplication(),enabled); it.copy(config=it.config.copy(reminders=enabled)) } })
                     }
+                    if(debugBuild) OutlinedButton(modifier=Modifier.testTag("test-notification"),onClick={
+                        onNotifications()
+                        notifyLocal(vm.getApplication(),99,"اختبار تنبيهات SAB Visa","تنبيه تجريبي من التطبيق؛ لا يمثل عملية بنكية ولا يغير الرصيد.")
+                    }) { Text("إرسال تنبيه تجريبي") }
                     Panel("الخصوصية") {
                         Text("المعالجة والتخزين المشفر على جهازك. لا إذن إنترنت ولا إعلانات أو نسخ سحابي. لا نحفظ النص الأصلي أو رموز التحقق أو أرقام الحسابات الكاملة.")
                         Text("لا يوجد قفل بيومتري مستقل أو تصدير في هذه النسخة. إزالة التطبيق تفقد بياناته. لا يضمن التطبيق تجنب الأرباح؛ كشف البنك وشروطه هما المرجع.",style=MaterialTheme.typography.bodySmall)
