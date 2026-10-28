@@ -5,6 +5,15 @@ import org.junit.Test
 import java.time.*
 
 class AutomaticSmsTest {
+    @Test fun roundedReminderDoesNotReplaceExactBalance() {
+        val b=Book(Config(1200000,0,Instant.EPOCH,"9876"))
+        val t=Instant.parse("2026-01-20T09:00:00Z")
+        val first=SmsRecord("exact",ParsedSms(SmsType.PURCHASE,100,654321,"9876",t,reason="synthetic"),t)
+        val later=SmsRecord("rounded",ParsedSms(SmsType.BALANCE,available=654300,last4="9876",at=t.plusSeconds(60),reason="comparison"),t.plusSeconds(60))
+        val result=applyAutomaticSms(b,listOf(first,later),t.plusSeconds(120))
+        assertEquals(654321L,result.book.liveBalance(t.plusSeconds(120))!!.available)
+        assertEquals(1,result.book.checkpoints.size)
+    }
     private val start=Instant.parse("2026-01-01T00:00:00Z")
     private val now=Instant.parse("2026-05-30T20:00:00Z")
     private fun at(date: String)=LocalDate.parse(date).atTime(12,0).atZone(RIYADH).toInstant()

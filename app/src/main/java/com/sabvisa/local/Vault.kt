@@ -19,7 +19,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 typealias Inbox = SmsRecord
-data class VaultData(val book: Book? = null, val inbox: List<Inbox> = emptyList(), val updateAccess: UpdateAccess=UpdateAccess())
+data class VaultData(val book: Book? = null, val inbox: List<Inbox> = emptyList(), val updateAccess: UpdateAccess=UpdateAccess(), val smsAfter: Long=0, val smsId: Long=0)
 
 /** One process-wide lock covers receiver, worker and UI; write completes before observers change. */
 class Vault private constructor(context: Context) {
@@ -37,6 +37,10 @@ class Vault private constructor(context: Context) {
         }.generateKey()
     }
     @Synchronized fun load(): VaultData {
+        return readDisk()
+    }
+    @Synchronized fun current(): VaultData = updates.value ?: readDisk()
+    private fun readDisk(): VaultData {
         if (!file.baseFile.exists() && !File(file.baseFile.path + ".bak").exists()) return VaultData().also { updates.value = it }
         val bytes = file.readFully()
         check(bytes.size > 30 && bytes[0] == 1.toByte()) { "إصدار تخزين غير مدعوم أو ملف تالف" }
@@ -49,8 +53,10 @@ class Vault private constructor(context: Context) {
         return result
     }
     @Synchronized fun change(transform: (VaultData) -> VaultData) {
-        val proposed = transform(load())
-        val processed = proposed.book?.let { applyAutomaticSms(it,proposed.inbox,Instant.now()) }
+        val before=current()
+        val proposed = transform(before)
+        if(proposed==before) return
+        val processed = proposed.book?.takeIf { proposed.book!=before.book || proposed.inbox!=before.inbox }?.let { applyAutomaticSms(it,proposed.inbox,Instant.now()) }
         val next = if(processed==null) proposed else proposed.copy(book=processed.book,inbox=processed.records)
         next.book?.validate()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -62,7 +68,7 @@ class Vault private constructor(context: Context) {
         updates.value = next
     }
     @Synchronized fun ingest(sender: String, body: String, received: Instant): Boolean {
-        val current = load()
+        val current = current()
         val config = current.book?.config ?: return false
         val parsed = SmsParser.parse(sender, body, received, config.senders)
         if (parsed.type == SmsType.IGNORE) return false
@@ -71,6 +77,21 @@ class Vault private constructor(context: Context) {
         // Persist extracted fields only. OTP, full account numbers and original SMS are never saved.
         change { it.copy(inbox=it.inbox + Inbox(key, parsed, received)) }
         return true
+    }
+    /** Batch commit; read cursor advances atomically with all extracted records. */
+    @Synchronized fun ingestBatch(messages: List<Triple<String,String,Instant>>, through: Long, lastId: Long=0): Int {
+        val before=current()
+        val config=before.book?.config ?: return 0
+        val seen=before.inbox.mapTo(mutableSetOf()) { it.id }
+        val added=messages.mapNotNull { (sender,body,received) ->
+            val p=SmsParser.parse(sender,body,received,config.senders)
+            if(p.type==SmsType.IGNORE) null else {
+                val fingerprint=messageFingerprint(sender,body,p)
+                if(seen.add(fingerprint)) Inbox(fingerprint,p,received) else null
+            }
+        }
+        change { it.copy(inbox=it.inbox+added,smsAfter=maxOf(it.smsAfter,through),smsId=maxOf(it.smsId,lastId)) }
+        return added.size
     }
     @Synchronized fun wipe() {
         file.delete()
@@ -101,9 +122,9 @@ class Vault private constructor(context: Context) {
 private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map(::getJSONObject)
 private fun JSONObject.nullable(name: String): String? = if(isNull(name)) null else getString(name)
 private fun obj(vararg pairs: Pair<String, Any?>): JSONObject = JSONObject().apply { pairs.forEach { (k,v) -> put(k,v ?: JSONObject.NULL) } }
-private fun encode(v: VaultData): JSONObject = obj("version" to 1,
+private fun encode(v: VaultData): JSONObject = obj("version" to 1,"smsAfter" to v.smsAfter,"smsId" to v.smsId,
     "updateAccess" to v.updateAccess.let { a -> obj("token" to a.token,"notifiedCode" to a.notifiedCode,"checkedAt" to a.checkedAt,
-        "available" to a.available?.let { u -> obj("code" to u.code,"name" to u.name,"tag" to u.tag) }) },
+        "available" to a.available?.let { u -> obj("code" to u.code,"name" to u.name,"tag" to u.tag,"assetId" to u.assetId,"bytes" to u.bytes,"sha256" to u.sha256) }) },
     "book" to v.book?.let { b -> obj(
         "config" to b.config.let { c -> obj("limit" to c.limit, "ordinary" to c.openingOrdinary, "at" to c.openingAt.toString(), "last4" to c.last4, "day" to c.closeDay, "budget" to c.budget, "senders" to JSONArray(c.senders.toList()), "reminders" to c.reminders,"installmentDay" to c.installmentDay) },
         "plans" to JSONArray(b.plans.map { p -> obj("id" to p.id,"name" to p.name,"principal" to p.principal,"months" to p.months,"due" to p.firstDue.toString(),"at" to p.createdAt.toString(),"paidBefore" to p.paidBeforeTracking) }),
@@ -131,6 +152,6 @@ private fun decode(v: JSONObject): VaultData {
         val p = i.getJSONObject("parsed")
         Inbox(i.getString("id"),ParsedSms(SmsType.valueOf(p.getString("type")),p.nullable("amount")?.toLong(),p.nullable("available")?.toLong(),p.nullable("last4"),Instant.parse(p.getString("at")),p.nullable("due")?.let(LocalDate::parse),p.getString("reason"),p.nullable("merchant"),p.nullable("months")?.toInt(),p.nullable("monthly")?.toLong()),Instant.parse(i.getString("received")),i.getString("status"))
     }, v.optJSONObject("updateAccess")?.let { a ->
-        UpdateAccess(a.optString("token"),a.optJSONObject("available")?.let { u -> AppUpdate(u.getInt("code"),u.getString("name"),u.getString("tag")) },a.optInt("notifiedCode"),a.optString("checkedAt"))
-    } ?: UpdateAccess())
+        UpdateAccess(a.optString("token"),a.optJSONObject("available")?.let { u -> AppUpdate(u.getInt("code"),u.getString("name"),u.getString("tag"),u.optLong("assetId"),u.optLong("bytes"),u.optString("sha256")) },a.optInt("notifiedCode"),a.optString("checkedAt"))
+    } ?: UpdateAccess(),v.optLong("smsAfter",0),v.optLong("smsId",0))
 }

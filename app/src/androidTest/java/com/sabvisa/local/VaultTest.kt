@@ -19,6 +19,25 @@ class VaultTest {
         context=ApplicationProvider.getApplicationContext(); vault=Vault.get(context); vault.wipe()
     }
     @After fun cleanup() { vault.wipe() }
+    @Test fun batchImportCommitsCursorWithRecordsAndMetadataDoesNotReplayMoney() {
+        vault.change { VaultData(Book(Config(1200000,0,Instant.EPOCH,"9876"))) }
+        val at=Instant.parse("2026-01-20T09:00:00Z")
+        val sms=Triple("SAB","شراء بطاقة Visa (9876) لدى SYNTHETIC بمبلغ SAR 42.75 الرصيد: SAR 6543.21",at)
+        assertEquals(1,vault.ingestBatch(listOf(sms,sms,Triple("SAB","رمز التحقق: 1234",at)),12345,77))
+        val saved=vault.load()
+        assertEquals(77L,saved.smsId)
+        assertEquals(12345L,saved.smsAfter)
+        assertEquals(0,vault.ingestBatch(listOf(sms),12346,78))
+        assertEquals(saved.book,vault.load().book)
+        val book=vault.current().book
+        vault.change { it.copy(updateAccess=UpdateAccess("synthetic_read_credential_12345")) }
+        assertSame(book,vault.current().book)
+        assertEquals(78L,vault.load().smsId)
+        assertEquals(1,vault.load().inbox.size)
+        vault.change { it.copy(smsAfter=0,smsId=0) }
+        assertEquals(0,vault.ingestBatch(listOf(sms),12347,78))
+        assertEquals(saved.book,vault.load().book)
+    }
     @Test fun correctingCardReplaysStoredPlanAndKeepsUpdateConnection() {
         vault.change { VaultData(Book(Config(1200000,0,Instant.EPOCH,"1111")),updateAccess=UpdateAccess("synthetic_read_credential_12345")) }
         val plan="تم تحويل العملية الشرائية بمبلغ س.ر 2,400.00 على البطاقة الائتمانية9876 الى12 قسط شهرى, مبلغ القسط س.ر 200.00, الربح الشهرى .00%و0 رسوم ادارية."

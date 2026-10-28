@@ -15,7 +15,13 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
     val status = MutableStateFlow("")
     val busy = MutableStateFlow(false)
     val fatal = MutableStateFlow(false)
-    init { action { vault.change { it }; refreshSms(); scheduleUpdateChecks(application,vault.load().updateAccess.token.isNotEmpty()); status.value="المتابعة تلقائية من رسائل SMS" } }
+    val updateBusy=MutableStateFlow(false)
+    val updateStatus=MutableStateFlow("")
+    val downloadProgress=MutableStateFlow(-1)
+    val downloadReady=MutableStateFlow(false)
+    private val cancelDownload=java.util.concurrent.atomic.AtomicBoolean(false)
+    private var readyUpdate: AppUpdate?=null
+    init { action { vault.current(); refreshSms(); scheduleUpdateChecks(application,vault.current().updateAccess.token.isNotEmpty()); scheduleReminders(application,vault.current().book?.config?.reminders==true); status.value="المتابعة تلقائية من رسائل SMS" } }
     private fun refreshSms() {
         if(getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS)==android.content.pm.PackageManager.PERMISSION_GRANTED && vault.load().book!=null) importSms(getApplication())
     }
@@ -31,28 +37,56 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
         }
     }
     fun updateBook(transform: (Book) -> Book) = action {
-        vault.change { it.copy(book=transform(it.book ?: error("أكمل الإعداد"))) }; status.value="تم الحفظ محلياً"
+        vault.change { val b=transform(it.book ?: error("أكمل الإعداد")); val reset=b.config.senders!=it.book!!.config.senders; it.copy(book=b,smsAfter=if(reset) 0 else it.smsAfter,smsId=if(reset) 0 else it.smsId) }; status.value="تم الحفظ محلياً"
     }
-    fun importAll() = action { status.value="تمت مزامنة ${importSms(getApplication())} رسالة جديدة تلقائياً" }
+    fun importAll(full: Boolean=false) = action { status.value="تمت مزامنة ${importSms(getApplication(),full)} رسالة جديدة تلقائياً" }
     fun syncIfAllowed() {
         if(data.value?.book!=null && getApplication<Application>().checkSelfPermission(android.Manifest.permission.READ_SMS)==android.content.pm.PackageManager.PERMISSION_GRANTED) importAll()
     }
     fun erase() = action { scheduleReminders(getApplication(),false); scheduleUpdateChecks(getApplication(),false); vault.wipe(); fatal.value=false; status.value="حُذفت بيانات التطبيق المحلية" }
-    fun connectUpdates(token: String) = action {
+    fun connectUpdates(token: String) = updateAction {
         val trimmed=token.trim()
         val available=ReleaseUpdates.fetch(trimmed,ReleaseUpdates.installedCode(getApplication()))
         vault.change { it.copy(updateAccess=UpdateAccess(trimmed,available,checkedAt=Instant.now().toString())) }
         scheduleUpdateChecks(getApplication(),true)
-        status.value="تم ربط تحديثات GitHub الخاصة؛ رمز القراءة محفوظ مشفراً على الجهاز"
+        updateStatus.value="تم ربط تحديثات GitHub الخاصة؛ رمز القراءة محفوظ مشفراً على الجهاز"
     }
-    fun disconnectUpdates() = action {
+    fun disconnectUpdates() = updateAction {
         vault.change { it.copy(updateAccess=UpdateAccess()) }
         scheduleUpdateChecks(getApplication(),false)
         getApplication<Application>().getSystemService(android.app.NotificationManager::class.java).cancel(4)
-        status.value="أُلغي ربط التحديثات وحُذف الرمز المحلي؛ يمكنك إلغاء الرمز من GitHub أيضاً"
+        UpdateDownload.file(getApplication()).delete(); readyUpdate=null; downloadReady.value=false
+        updateStatus.value="أُلغي ربط التحديثات وحُذف الرمز المحلي؛ يمكنك إلغاء الرمز من GitHub أيضاً"
     }
-    fun checkUpdates() = action {
-        status.value=if(ReleaseUpdates.check(getApplication())) "يتوفر تحديث؛ استخدم زر التنزيل داخل التطبيق" else "لا يوجد إصدار أحدث في فحص GitHub الحالي"
+    private fun updateAction(block: ()->Unit) {
+        if(updateBusy.value) return
+        updateBusy.value=true
+        viewModelScope.launch(Dispatchers.IO) {
+            try { block() } catch(_: Exception) { updateStatus.value="تعذرت العملية؛ تحقق من الاتصال وصلاحية ربط GitHub وأعد المحاولة" }
+            finally { updateBusy.value=false }
+        }
+    }
+    fun checkUpdates() = updateAction {
+        updateStatus.value="جارٍ فحص التحديث…"
+        updateStatus.value=if(ReleaseUpdates.check(getApplication())) "يتوفر تحديث؛ يمكنك تنزيله وتثبيته هنا" else "أنت على أحدث إصدار متاح لحسابك"
+    }
+    fun downloadUpdate() = updateAction {
+        downloadReady.value=false; downloadProgress.value=0; cancelDownload.set(false)
+        try {
+            val access=vault.current().updateAccess
+            val update=access.available ?: error("افحص التحديث أولاً")
+            updateStatus.value="جارٍ التنزيل والتحقق من الملف…"
+            UpdateDownload.download(getApplication(),update,access.token,cancelDownload) { downloadProgress.value=it }
+            readyUpdate=update; downloadReady.value=true; updateStatus.value="اكتمل التنزيل والتحقق؛ جاهز للتثبيت"
+        } catch(e: Exception) {
+            if(cancelDownload.get()) updateStatus.value="أُلغي التنزيل؛ يمكنك المحاولة مجدداً" else throw e
+        } finally { downloadProgress.value=-1 }
+    }
+    fun cancelUpdate() { cancelDownload.set(true) }
+    fun installUpdate() = updateAction {
+        val update=readyUpdate ?: error("أعد تنزيل الملف")
+        UpdateDownload.verify(getApplication(),UpdateDownload.file(getApplication()),update)
+        updateStatus.value=if(UpdateDownload.install(getApplication())) "أكمل موافقة التثبيت في Android" else "اسمح بالتثبيت لهذا التطبيق ثم ارجع واضغط تثبيت"
     }
     fun changeLimit(limit: Long) = updateBook { b ->
         require(limit in 1..MAX_MONEY) { "أدخل الحد الائتماني الجديد" }
