@@ -44,6 +44,7 @@ class DashboardTest {
         compose.onNodeWithText("الأقساط",useUnmergedTree=true).performClick()
         compose.onNodeWithText("خطة تجريبية").assertExists()
         compose.onNodeWithText("الحركات",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("activity-list").performScrollToNode(hasText("شراء تجريبي"))
         compose.onNodeWithText("شراء تجريبي").assertExists()
         compose.onNodeWithText("الإعدادات",useUnmergedTree=true).performClick()
         compose.onNodeWithText("الخصوصية").assertExists()

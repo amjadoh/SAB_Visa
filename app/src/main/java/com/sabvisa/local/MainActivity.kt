@@ -209,7 +209,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                         TextButton(onClick={tab=5}) { Text("مصادر SMS") }
                     }
                     val events=data!!.inbox.filter { it.status=="AUTO" && it.parsed.type in (if(paymentsOnly) setOf(SmsType.PAYMENT) else setOf(SmsType.PAYMENT,SmsType.PURCHASE,SmsType.REFUND,SmsType.FEE)) }.sortedByDescending { it.parsed.at }
-                    LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                    LazyColumn(Modifier.weight(1f).testTag("activity-list"),verticalArrangement=Arrangement.spacedBy(10.dp)) {
                         items(events,key={it.id}) { item ->
                             val p=item.parsed
                             Panel(when(p.type) { SmsType.PAYMENT -> "سداد مؤكد"; SmsType.REFUND -> "استرجاع"; SmsType.FEE -> "رسوم"; else -> "شراء" }) {
@@ -275,6 +275,7 @@ private data class Form(val title: String, val help: String, val fields: List<In
                     }) { Text("إرسال تنبيه تجريبي") }
                     Panel("تحديثات التطبيق الخاصة") {
                         val access=data!!.updateAccess
+                        if(access.token.isEmpty() && updateStatus.isNotBlank()) Text(updateStatus,style=MaterialTheme.typography.bodySmall)
                         Text("الإصدار المثبت ${ReleaseUpdates.installedName(context)} • فحص رقم الإصدار من GitHub دون إرسال الرسائل أو الحسابات")
                         if(access.token.isEmpty()) {
                             Text("الربط اختياري. أنشئ رمزاً محدوداً لمستودع SAB_Visa، بصلاحية Contents: Read-only فقط، ثم أدخله هنا. يُحفظ مشفراً ولا يُرسل إلا إلى GitHub.",style=MaterialTheme.typography.bodySmall)

@@ -109,8 +109,8 @@ private val Gold=Color(0xFFBD9350)
         Row(Modifier.fillMaxWidth().height(210.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             points.forEachIndexed { i,p -> Column(Modifier.weight(1f).clickable { selected=i }) {
                 Row(Modifier.weight(1f).fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(5.dp)) {
-                    Box(Modifier.weight(1f).height((p.first.toDouble()/max*150).dp.coerceAtLeast(2.dp)).background(MaterialTheme.colorScheme.primary,RoundedCornerShape(topStart=5.dp,topEnd=5.dp)))
-                    Box(Modifier.weight(1f).height((p.second.toDouble()/max*150).dp.coerceAtLeast(2.dp)).background(Gold,RoundedCornerShape(topStart=5.dp,topEnd=5.dp)))
+                    Box(Modifier.weight(1f).height(if(p.first==0L) 0.dp else (p.first.toDouble()/max*150).dp.coerceAtLeast(2.dp)).background(MaterialTheme.colorScheme.primary,RoundedCornerShape(topStart=5.dp,topEnd=5.dp)))
+                    Box(Modifier.weight(1f).height(if(p.second==0L) 0.dp else (p.second.toDouble()/max*150).dp.coerceAtLeast(2.dp)).background(Gold,RoundedCornerShape(topStart=5.dp,topEnd=5.dp)))
                 }
                 Text(if(monthly) "${periods[i].first.monthValue}/${periods[i].first.year}" else "${periods[i].first.dayOfMonth}/${periods[i].first.monthValue}",style=MaterialTheme.typography.labelSmall)
                 TextButton(onClick={selected=i},contentPadding=PaddingValues(0.dp)) { Text("تفاصيل",style=MaterialTheme.typography.labelSmall) }
@@ -120,6 +120,7 @@ private val Gold=Color(0xFFBD9350)
         Text("اضغط الفترة لعرض مبالغها. تشمل المشتريات المسجلة العملية الأصلية إن حُوّلت للتقسيط؛ ليست مقياس المشتريات العادية المتبقية.",style=MaterialTheme.typography.bodySmall)
         if(selected>=0) {
             val p=points[selected]
+            if(p.first==0L && p.second==0L) Text("لا سجلات في هذه الفترة؛ لا يؤكد ذلك اكتمال الرسائل")
             Text("مشتريات ${sar(p.first)} • سداد ${sar(p.second)} ر.س")
             Text("من السداد: أصل قسط ${sar(p.third)} • إضافي ${sar(p.second-p.third)} ر.س")
         }

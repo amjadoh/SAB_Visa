@@ -78,6 +78,8 @@ class CardViewModel(application: Application): AndroidViewModel(application) {
             updateStatus.value="جارٍ التنزيل والتحقق من الملف…"
             UpdateDownload.download(getApplication(),update,access.token,cancelDownload) { downloadProgress.value=it }
             readyUpdate=update; downloadReady.value=true; updateStatus.value="اكتمل التنزيل والتحقق؛ جاهز للتثبيت"
+        } catch(e: Exception) {
+            if(cancelDownload.get()) updateStatus.value="أُلغي التنزيل؛ يمكنك المحاولة مجدداً" else throw e
         } finally { downloadProgress.value=-1 }
     }
     fun cancelUpdate() { cancelDownload.set(true) }
